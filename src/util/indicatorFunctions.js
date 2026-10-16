@@ -2077,3 +2077,142 @@ export let indicatorStyleDefault = {
     },
   },
 };
+
+export const hiddenKeys = [
+  "upperRSI",
+  "middleRSI",
+  "lowerRSI",
+  "middleBand",
+  "lowerBand",
+  "upperBand",
+  "zero",
+  "bgFill",
+  "bg",
+  "zeroLine",
+  "bandBackground",
+  "overboughtFill",
+  "oversoldFill",
+  "lowerLevel",
+  "upperLevel",
+  "center",
+  "oscillatorFill",
+  "bbLowerBand",
+  "bbUpperBand",
+  "bbUperBand",
+  "_bg",
+];
+
+export function isIndicatorKeyPlotted({
+  key,
+  type,
+  id,
+  indicatorConfigs,
+  indicatorConfigDefault,
+  indicatorStyle,
+  indicatorSeriesRef,
+}) {
+  if (!key) return false;
+
+  // Ignore internal keys, hiddenKeys, or keys starting with underscore
+  if (
+    key.startsWith("_") ||
+    hiddenKeys.includes(key) ||
+    [
+      "result",
+      "currentLevels",
+      "upperData",
+      "lowerData",
+      "bbUpperData",
+      "bbLowerData",
+      "baseCrossMarkersPlugin",
+      "options",
+      "priceScale",
+      "redrawCloud",
+      "time",
+      "color",
+    ].includes(key)
+  ) {
+    return false;
+  }
+
+  // Config check: MA-dependent lines
+  const config =
+    (indicatorConfigs && id ? indicatorConfigs[id] : null) ||
+    (indicatorConfigDefault && type ? indicatorConfigDefault[type] : null);
+  const normalizedMaType = String(
+    config?.maType ?? config?.matype ?? config?.ma_type ?? "",
+  )
+    .trim()
+    .toLowerCase();
+
+  // Do not render values for MA-dependent lines when that MA is not plotted
+  if (
+    normalizedMaType === "none" &&
+    ["smoothingMA", "bbUpper", "bbLower"].includes(key)
+  ) {
+    return false;
+  }
+  if (
+    ["bbUpper", "bbLower"].includes(key) &&
+    normalizedMaType !== "sma + bollinger bands"
+  ) {
+    return false;
+  }
+
+  // Style visibility check
+  const style =
+    indicatorStyle?.[id]?.[key] ||
+    indicatorStyle?.[type]?.[key] ||
+    (indicatorStyle?.[id] && typeof indicatorStyle[id].visible === "boolean"
+      ? indicatorStyle[id]
+      : null) ||
+    (indicatorStyle?.[type] && typeof indicatorStyle[type].visible === "boolean"
+      ? indicatorStyle[type]
+      : null);
+
+  if (style?.visible === false) {
+    return false;
+  }
+
+  // Check against active Lightweight Charts series in indicatorSeriesRef
+  const group =
+    id && indicatorSeriesRef?.current ? indicatorSeriesRef.current[id] : null;
+  if (group && typeof group === "object") {
+    // If group is itself a single series
+    if (typeof group.setData === "function") {
+      if (
+        typeof group.options === "function" &&
+        group.options()?.visible === false
+      ) {
+        return false;
+      }
+      if (typeof group.data === "function") {
+        const d = group.data();
+        if (Array.isArray(d) && d.length === 0) return false;
+      }
+    } else {
+      // Group of series: check specific line series
+      const series = group[key];
+      if (series) {
+        if (
+          typeof series.options === "function" &&
+          series.options()?.visible === false
+        ) {
+          return false;
+        }
+        if (typeof series.data === "function") {
+          const d = series.data();
+          if (Array.isArray(d) && d.length === 0) return false;
+        }
+      }
+
+      // Check result data if stored
+      const plottedData = group?.result?.data?.[key];
+      if (Array.isArray(plottedData) && plottedData.length === 0) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}

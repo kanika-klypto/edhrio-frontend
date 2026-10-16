@@ -77,7 +77,7 @@ function StoryIcon({ story }) {
 
 function StoryCard({ story, onSelect }) {
   const timeAgo = formatTimeAgo(story.publishDate);
-  const sourceName = story.source || (story.category ? story.category.replace(/_/g, " ") : "Klypto News");
+  const sourceName = story.source || (story.category ? story.category.replace(/_/g, " ") : "Edhrio News");
 
   return (
     <article
@@ -133,7 +133,7 @@ export function TopStories() {
               title: item.title || newsObj.title || item.text || "",
               text: item.text || newsObj.text || "",
               publishDate: item.publishDate || json.updatedAt || new Date().toISOString(),
-              source: item.source || (item.category ? item.category.replace(/_/g, " ") : "Klypto Market"),
+              source: item.source || (item.category ? item.category.replace(/_/g, " ") : "Edhrio Market"),
               category: item.category || item.subCategory || "Market",
               sentiment: item.sentiment || newsObj.overallSentiment || "neutral",
               isinCode: item.isinCode || "",
@@ -277,7 +277,7 @@ export function TopStories() {
               <LuClock className="size-3.5" />
               <span>{formatTimeAgo(selectedStory.publishDate)}</span>
               <span>·</span>
-              <span>{selectedStory.source || "Klypto News"}</span>
+              <span>{selectedStory.source || "Edhrio News"}</span>
             </div>
 
             {/* Content text */}

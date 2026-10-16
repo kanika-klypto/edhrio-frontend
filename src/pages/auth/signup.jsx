@@ -103,7 +103,7 @@ export default function Signup() {
       await Swal.fire({
         icon: "success",
         title: "Signup Successful",
-        text: "Welcome to Klypto Share Marketing!",
+        text: "Welcome to Edhrio!",
         toast: true,
         position: "top-end",
         showConfirmButton: false,

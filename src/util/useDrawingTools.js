@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { LineSeries } from "lightweight-charts";
 
-const STORAGE_KEY_PREFIX = 'klypto_drawings_';
+const STORAGE_KEY_PREFIX = 'edhrio_drawings_';
 
 export default function useDrawingTools({ chartRef, seriesRef, containerRef, symbol, interval }) {
   const [activeTool, setActiveTool] = useState('cursor'); // 'cursor', 'trendLine', 'horizontalLine'

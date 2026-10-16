@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { FiX } from "react-icons/fi";
 import {
   IoEyeOutline,
@@ -14,6 +14,7 @@ import {
   ChevronsUpDownIcon,
   FolderCogIcon,
 } from "../../assets/icons";
+import { hiddenKeys, isIndicatorKeyPlotted } from "../../util/indicatorFunctions";
 
 export default function LeftObjectTree({
   onClose,
@@ -22,6 +23,7 @@ export default function LeftObjectTree({
   selectedIndicator = [],
   indicatorConfigs = {},
   indicatorConfigDefault = {},
+  indicatorStyle = {},
   indicatorVisibility = {},
   toggleIndicatorVisibility,
   removeIndicator,
@@ -29,9 +31,15 @@ export default function LeftObjectTree({
   liveIndicatorData = {},
   candlesRef,
   liveLtpBySymbol = {},
+  chartRef,
+  seriesRef,
+  indicatorSeriesRef,
+  indicatorDataRef,
+  panesRef,
 }) {
   const [activeTab, setActiveTab] = useState("tree"); // "tree" | "data"
   const [isMainSeriesVisible, setIsMainSeriesVisible] = useState(true);
+  const [hoveredData, setHoveredData] = useState(null);
 
   // Symbol display info
   const rawSymbol = selectedCurrency?.name || selectedCurrency?.symbol || "NIFTY";
@@ -84,16 +92,238 @@ export default function LeftObjectTree({
     return baseName;
   };
 
-  // Extract latest candle data for Data Window tab
+  // Crosshair hover synchronization for Data Window tab
+  useEffect(() => {
+    const mainChart = chartRef?.current;
+    if (!mainChart || activeTab !== "data") {
+      setHoveredData(null);
+      return;
+    }
+
+    const allCharts = [
+      mainChart,
+      ...Object.values(panesRef?.current || {}).map((p) => p?.chart),
+    ].filter(Boolean);
+
+    const handleCrosshairMove = (param) => {
+      // If cursor leaves chart or point is undefined, revert to live / latest
+      if (!param || !param.point || param.time === undefined) {
+        setHoveredData(null);
+        return;
+      }
+
+      const candles = Array.isArray(candlesRef?.current) ? candlesRef.current : [];
+      const targetTime = param.time;
+
+      let candleIndex = -1;
+      for (let i = candles.length - 1; i >= 0; i--) {
+        const cTime = candles[i]?.time;
+        if (
+          cTime === targetTime ||
+          (typeof cTime === "number" &&
+            typeof targetTime === "number" &&
+            Math.abs(cTime - targetTime) < 2)
+        ) {
+          candleIndex = i;
+          break;
+        }
+      }
+
+      let candleData = null;
+      if (candleIndex >= 0) {
+        const c = candles[candleIndex];
+        const prevClose =
+          candleIndex > 0 ? candles[candleIndex - 1]?.close : c?.open;
+        candleData = {
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+          prevClose,
+        };
+      } else {
+        const sData = param.seriesData?.get(seriesRef?.current);
+        if (sData) {
+          candleData = {
+            time: param.time,
+            open: sData.open ?? sData.value,
+            high: sData.high ?? sData.value,
+            low: sData.low ?? sData.value,
+            close: sData.close ?? sData.value,
+            volume: sData.volume,
+            prevClose: sData.open,
+          };
+        }
+      }
+
+      // Extract values for all active indicators at hovered candle time
+      const indValues = {};
+      if (Array.isArray(selectedIndicator)) {
+        selectedIndicator.forEach((ind) => {
+          const id = ind?.id;
+          const type = ind?.type;
+          if (!id) return;
+
+          let val = undefined;
+          const group = indicatorSeriesRef?.current?.[id];
+          if (group && typeof group === "object" && !group.priceScale) {
+            const subVals = {};
+            let count = 0;
+            let single = null;
+            Object.entries(group).forEach(([k, s]) => {
+              if (!s || typeof s.setData !== "function") return;
+              if (
+                !isIndicatorKeyPlotted({
+                  key: k,
+                  type,
+                  id,
+                  indicatorConfigs,
+                  indicatorConfigDefault,
+                  indicatorStyle,
+                  indicatorSeriesRef,
+                })
+              ) {
+                return;
+              }
+              const pData = param.seriesData?.get(s);
+              if (pData !== undefined && pData !== null) {
+                const v =
+                  typeof pData === "object"
+                    ? (pData.value ?? pData.close ?? pData)
+                    : pData;
+                if (v !== undefined && v !== null && !isNaN(v)) {
+                  subVals[k] = v;
+                  single = v;
+                  count++;
+                }
+              }
+            });
+            if (count === 1) val = single;
+            else if (count > 1) val = subVals;
+          }
+
+          // Fallback to indicatorDataRef
+          if (val === undefined) {
+            const dataArr = indicatorDataRef?.current?.[id];
+            if (Array.isArray(dataArr) && dataArr.length > 0) {
+              const pt = dataArr.find(
+                (p) =>
+                  p?.time === targetTime ||
+                  (typeof p?.time === "number" &&
+                    typeof targetTime === "number" &&
+                    Math.abs(p.time - targetTime) < 2),
+              );
+              if (pt) {
+                if (pt.value !== undefined) {
+                  if (
+                    isIndicatorKeyPlotted({
+                      key: "value",
+                      type,
+                      id,
+                      indicatorConfigs,
+                      indicatorConfigDefault,
+                      indicatorStyle,
+                      indicatorSeriesRef,
+                    })
+                  ) {
+                    val = pt.value;
+                  }
+                } else if (pt.close !== undefined) {
+                  if (
+                    isIndicatorKeyPlotted({
+                      key: "close",
+                      type,
+                      id,
+                      indicatorConfigs,
+                      indicatorConfigDefault,
+                      indicatorStyle,
+                      indicatorSeriesRef,
+                    })
+                  ) {
+                    val = pt.close;
+                  }
+                } else {
+                  const keys = Object.keys(pt).filter(
+                    (k) =>
+                      k !== "time" &&
+                      k !== "color" &&
+                      isIndicatorKeyPlotted({
+                        key: k,
+                        type,
+                        id,
+                        indicatorConfigs,
+                        indicatorConfigDefault,
+                        indicatorStyle,
+                        indicatorSeriesRef,
+                      }),
+                  );
+                  if (keys.length === 1) val = pt[keys[0]];
+                  else if (keys.length > 1) {
+                    const obj = {};
+                    keys.forEach((k) => (obj[k] = pt[k]));
+                    val = obj;
+                  }
+                }
+              }
+            }
+          }
+
+          if (val !== undefined) {
+            indValues[id] = val;
+          }
+        });
+      }
+
+      if (candleData) {
+        setHoveredData({
+          candle: candleData,
+          indicators: indValues,
+        });
+      }
+    };
+
+    allCharts.forEach((c) => {
+      try {
+        c.subscribeCrosshairMove(handleCrosshairMove);
+      } catch (e) {}
+    });
+
+    return () => {
+      allCharts.forEach((c) => {
+        try {
+          c.unsubscribeCrosshairMove?.(handleCrosshairMove);
+        } catch (e) {}
+      });
+    };
+  }, [
+    chartRef,
+    seriesRef,
+    indicatorSeriesRef,
+    indicatorDataRef,
+    panesRef,
+    candlesRef,
+    activeTab,
+    selectedIndicator,
+    indicatorStyle,
+    indicatorConfigs,
+    indicatorConfigDefault,
+  ]);
+
+  // Extract candle data for Data Window tab (hovered candle or fallback to latest/live)
   const candles = Array.isArray(candlesRef?.current) ? candlesRef.current : [];
   const latestCandle = candles.length > 0 ? candles[candles.length - 1] : null;
+  const activeCandle = hoveredData ? hoveredData.candle : latestCandle;
 
-  const currentClose =
-    liveLtpBySymbol?.[rawSymbol] ??
-    liveLtpBySymbol?.[selectedCurrency?.symbol] ??
-    latestCandle?.close;
-  const prevClose =
-    candles.length > 1 ? candles[candles.length - 2]?.close : latestCandle?.open;
+  const currentClose = hoveredData
+    ? hoveredData.candle?.close
+    : (liveLtpBySymbol?.[rawSymbol] ??
+      liveLtpBySymbol?.[selectedCurrency?.symbol] ??
+      latestCandle?.close);
+  const prevClose = hoveredData
+    ? hoveredData.candle?.prevClose
+    : (candles.length > 1 ? candles[candles.length - 2]?.close : latestCandle?.open);
 
   const priceDiff =
     currentClose !== undefined && prevClose !== undefined
@@ -138,7 +368,7 @@ export default function LeftObjectTree({
   return (
     <div className="flex h-full w-full flex-col select-none bg-panel font-[family-name:-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif] text-[12px] text-fg rounded-tl-[10px] overflow-hidden">
       {/* Header with Segmented Tab Control */}
-      <div className="flex w-full items-center border-b border-line px-3 py-2">
+      <div className={`flex w-full items-center px-3 py-2 ${activeTab === "data" ? "" : "border-b border-line"}`}>
         <div className="flex w-full items-center rounded-md! bg-surface-2 p-0.5 text-[11px]">
           <button
             type="button"
@@ -146,7 +376,7 @@ export default function LeftObjectTree({
             onClick={() => setActiveTab("tree")}
             className={`flex-1 cursor-pointer py-1.5 text-center font-medium rounded-sm! transition-all duration-150 ${
               activeTab === "tree"
-                ? "bg-surface-3 text-fg shadow-xs font-semibold"
+                ? "bg-[var(--brand-primary)] text-white shadow-xs font-semibold"
                 : "text-fg-muted hover:text-fg"
             }`}
           >
@@ -158,7 +388,7 @@ export default function LeftObjectTree({
             onClick={() => setActiveTab("data")}
             className={`flex-1 cursor-pointer py-1.5 text-center font-medium rounded-sm! transition-all duration-150 ${
               activeTab === "data"
-                ? "bg-surface-3 text-fg shadow-xs font-semibold"
+                ? "bg-[var(--brand-primary)] text-white shadow-xs font-semibold"
                 : "text-fg-muted hover:text-fg"
             }`}
           >
@@ -333,19 +563,19 @@ export default function LeftObjectTree({
           /* Data Window Tab Content */
           <div className="flex flex-col">
             {/* Date Row */}
-            <div className="flex items-center justify-between border-b border-1 border-line px-3 py-2 text-[12px]">
+            <div className="flex items-center justify-between px-3 py-2 text-[12px]">
               <span className="text-fg-muted font-normal">Date</span>
               <span className="font-medium text-fg">
-                {formatDataWindowDate(latestCandle?.time)}
+                {formatDataWindowDate(activeCandle?.time)}
               </span>
             </div>
 
             {/* Symbol Details Banner & Rows */}
-            <div className="border-b border-1 border-line pb-2">
+            <div className="pb-2">
               {/* Header banner */}
-              <div className="flex items-center gap-2 bg-[#172d47]/70 dark:bg-[#152a42] px-3 py-1.5 text-white">
-                <CandlestickIcon size={15} className="text-white" />
-                <span className="truncate text-[13px] font-bold text-white tracking-tight">
+              <div className="flex items-center gap-2 px-3 py-1.5 ">
+                <CandlestickIcon size={15} />
+                <span className="truncate text-[13px] font-bold tracking-tight">
                   {rawSymbol} · {timeframeValue || "1D"} · {exchange}
                 </span>
               </div>
@@ -355,19 +585,19 @@ export default function LeftObjectTree({
                 <div className="flex items-center justify-between px-3 py-1 text-[12px]">
                   <span className="text-fg-muted">Open</span>
                   <span className="font-mono text-[#22ab94] font-medium">
-                    {formatPrice(latestCandle?.open)}
+                    {formatPrice(activeCandle?.open)}
                   </span>
                 </div>
                 <div className="flex items-center justify-between px-3 py-1 text-[12px]">
                   <span className="text-fg-muted">High</span>
                   <span className="font-mono text-[#22ab94] font-medium">
-                    {formatPrice(latestCandle?.high)}
+                    {formatPrice(activeCandle?.high)}
                   </span>
                 </div>
                 <div className="flex items-center justify-between px-3 py-1 text-[12px]">
                   <span className="text-fg-muted">Low</span>
                   <span className="font-mono text-[#22ab94] font-medium">
-                    {formatPrice(latestCandle?.low)}
+                    {formatPrice(activeCandle?.low)}
                   </span>
                 </div>
                 <div className="flex items-center justify-between px-3 py-1 text-[12px]">
@@ -391,7 +621,7 @@ export default function LeftObjectTree({
                 <div className="flex items-center justify-between px-3 py-1 text-[12px]">
                   <span className="text-fg-muted">Vol</span>
                   <span className="font-mono text-[#22ab94] font-medium">
-                    {formatVolume(latestCandle?.volume)}
+                    {formatVolume(activeCandle?.volume)}
                   </span>
                 </div>
                 <div className="flex items-center justify-between px-3 py-1 text-[12px]">
@@ -414,10 +644,12 @@ export default function LeftObjectTree({
               selectedIndicator.map((ind) => {
                 const { id, type } = ind;
                 const label = getIndicatorLabel(ind);
-                const val = liveIndicatorData?.[id];
+                const val = hoveredData?.indicators?.[id] !== undefined
+                  ? hoveredData.indicators[id]
+                  : liveIndicatorData?.[id];
 
                 return (
-                  <div key={id} className="border-b border-1 border-line py-2">
+                  <div key={id} className="py-2">
                     {/* Indicator Header with wave icon & configurations */}
                     <div className="flex items-center gap-2 px-3 py-1 text-fg">
                       <WaveIcon size={15} className="text-fg-muted" />
@@ -433,23 +665,56 @@ export default function LeftObjectTree({
                     <div className="pt-0.5">
                       {val !== undefined && val !== null ? (
                         typeof val === "object" ? (
-                          Object.entries(val).map(([k, v]) => (
-                            <div
-                              key={k}
-                              className="flex items-center justify-between px-3 py-1 text-[12px]"
-                            >
-                              <span className="text-fg-muted capitalize">
-                                {k.replace(/([A-Z])/g, " $1").trim()}
-                              </span>
-                              <span className="font-mono text-[#22ab94] font-medium">
-                                {typeof v === "number" ? formatPrice(v) : String(v)}
-                              </span>
-                            </div>
-                          ))
+                          (() => {
+                            const entries = Object.entries(val).filter(([k]) =>
+                              isIndicatorKeyPlotted({
+                                key: k,
+                                type,
+                                id,
+                                indicatorConfigs,
+                                indicatorConfigDefault,
+                                indicatorStyle,
+                                indicatorSeriesRef,
+                              }),
+                            );
+
+                            if (entries.length === 0) {
+                              return (
+                                <div className="flex items-center justify-between px-3 py-1 text-[12px]">
+                                  <span className="text-fg-muted">
+                                    {type === "VOLUME" || type === "Volume"
+                                      ? "Volume"
+                                      : type}
+                                  </span>
+                                  <span className="font-mono text-[#22ab94] font-medium">
+                                    -
+                                  </span>
+                                </div>
+                              );
+                            }
+
+                            return entries.map(([k, v]) => (
+                              <div
+                                key={k}
+                                className="flex items-center justify-between px-3 py-1 text-[12px]"
+                              >
+                                <span className="text-fg-muted capitalize">
+                                  {k.replace(/([A-Z])/g, " $1").trim()}
+                                </span>
+                                <span className="font-mono text-[#22ab94] font-medium">
+                                  {typeof v === "number"
+                                    ? formatPrice(v)
+                                    : String(v)}
+                                </span>
+                              </div>
+                            ));
+                          })()
                         ) : (
                           <div className="flex items-center justify-between px-3 py-1 text-[12px]">
                             <span className="text-fg-muted">
-                              {type === "VOLUME" || type === "Volume" ? "Volume" : type}
+                              {type === "VOLUME" || type === "Volume"
+                                ? "Volume"
+                                : type}
                             </span>
                             <span className="font-mono text-[#22ab94] font-medium">
                               {type === "VOLUME" || type === "Volume"
@@ -463,11 +728,13 @@ export default function LeftObjectTree({
                       ) : (
                         <div className="flex items-center justify-between px-3 py-1 text-[12px]">
                           <span className="text-fg-muted">
-                            {type === "VOLUME" || type === "Volume" ? "Volume" : type}
+                            {type === "VOLUME" || type === "Volume"
+                              ? "Volume"
+                              : type}
                           </span>
                           <span className="font-mono text-[#22ab94] font-medium">
                             {type === "VOLUME" || type === "Volume"
-                              ? formatVolume(latestCandle?.volume)
+                              ? formatVolume(activeCandle?.volume)
                               : "-"}
                           </span>
                         </div>

@@ -40,7 +40,7 @@ export default function LandingShell({ pricingOnly = false }) {
   const { theme, toggleTheme } = useLandingTheme();
 
   useEffect(() => {
-    document.title = pricingOnly ? "Pricing | Klypto" : "Klypto - See the market clearly";
+    document.title = pricingOnly ? "Pricing | Edhrio" : "Edhrio";
   }, [pricingOnly]);
 
   useEffect(() => {

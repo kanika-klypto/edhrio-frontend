@@ -46,6 +46,8 @@ import {
   resolvePaneKey,
   indicatorStyleDefault,
   PANE_INDICATORS,
+  hiddenKeys,
+  isIndicatorKeyPlotted,
 } from "../util/indicatorFunctions";
 import { getStrategySocket } from "../services/websocket/socket";
 import { toast } from "react-toastify";
@@ -67,6 +69,7 @@ import { getUser } from "./auth/protected";
 import useDrawingTools from "../util/useDrawingTools";
 import DrawingToolbar from "../components/tradingModals/DrawingToolbar";
 import DrawingToolbox from "../components/tradingModals/DrawingToolbox";
+import { getStockLogo, getStockFullName } from "../util/stockLogo";
 
 const getInitialLookbackDate = (timeframe) => {
   const d = new Date();
@@ -478,37 +481,40 @@ export default function Candlestick() {
   });
   const [isResizingSidePanel, setIsResizingSidePanel] = useState(false);
 
-  const handleSidePanelResizeStart = useCallback((e) => {
-    e.preventDefault();
-    setIsResizingSidePanel(true);
-    const startX = e.clientX;
-    const startWidth = sidePanelWidth;
+  const handleSidePanelResizeStart = useCallback(
+    (e) => {
+      e.preventDefault();
+      setIsResizingSidePanel(true);
+      const startX = e.clientX;
+      const startWidth = sidePanelWidth;
 
-    const handleMouseMove = (moveEvent) => {
-      const delta = startX - moveEvent.clientX;
-      const maxWidth = Math.floor(window.innerWidth * 0.7);
-      const newWidth = Math.max(200, Math.min(maxWidth, startWidth + delta));
-      setSidePanelWidth(newWidth);
-    };
+      const handleMouseMove = (moveEvent) => {
+        const delta = startX - moveEvent.clientX;
+        const maxWidth = Math.floor(window.innerWidth * 0.7);
+        const newWidth = Math.max(200, Math.min(maxWidth, startWidth + delta));
+        setSidePanelWidth(newWidth);
+      };
 
-    const handleMouseUp = () => {
-      setIsResizingSidePanel(false);
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      setSidePanelWidth((current) => {
-        localStorage.setItem("sidePanelWidth", String(current));
-        return current;
-      });
-      window.dispatchEvent(new Event("resize"));
-    };
+      const handleMouseUp = () => {
+        setIsResizingSidePanel(false);
+        document.removeEventListener("mousemove", handleMouseMove);
+        document.removeEventListener("mouseup", handleMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        setSidePanelWidth((current) => {
+          localStorage.setItem("sidePanelWidth", String(current));
+          return current;
+        });
+        window.dispatchEvent(new Event("resize"));
+      };
 
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, [sidePanelWidth]);
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [sidePanelWidth],
+  );
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -1083,10 +1089,7 @@ export default function Candlestick() {
           isDeployed: Boolean(isDeployed),
         };
 
-        console.log(
-          "[Save user Strategy] Frontend payload:",
-          payload,
-        );
+        console.log("[Save user Strategy] Frontend payload:", payload);
 
         const response = await saveNotebookStrategy(payload);
         const savedStrategy = response?.data || response;
@@ -1183,10 +1186,7 @@ export default function Candlestick() {
           payload,
         );
 
-        const response = await updateNotebookStrategy(
-          strategyId,
-          payload,
-        );
+        const response = await updateNotebookStrategy(strategyId, payload);
         const updatedStrategy = response?.data || response;
         if (updatedStrategy?.id || updatedStrategy?._id) {
           setActiveStrategyRecord(updatedStrategy);
@@ -1224,7 +1224,6 @@ export default function Candlestick() {
       toDate,
     ],
   );
-
 
   const handleRenameStrategy = useCallback(
     async (code) => {
@@ -3283,10 +3282,7 @@ json.dumps(result)
 
   const handleSelectSavedStrategy = useCallback(
     async (strategy) => {
-      console.log(
-        "[Strategy] Selected strategy name:",
-     strategy?.strategyName,
-      );
+      console.log("[Strategy] Selected strategy name:", strategy?.strategyName);
       const strategyCode =
         typeof strategy?.code === "string" && strategy.code.trim()
           ? strategy.code
@@ -3538,7 +3534,12 @@ json.dumps(result)
   const getLoadedCandleRange = useCallback(() => {
     const loadedCandles = candlesRef.current;
     if (!Array.isArray(loadedCandles) || loadedCandles.length === 0) {
-      return { firstTime: null, lastTime: null, firstDate: null, lastDate: null };
+      return {
+        firstTime: null,
+        lastTime: null,
+        firstDate: null,
+        lastDate: null,
+      };
     }
 
     const firstTime = Number(loadedCandles[0]?.time);
@@ -4659,16 +4660,18 @@ json.dumps(result)
       Object.values(currentGroup).filter((series) => series?.setData),
     );
 
-    allCreatedSeriesRef.current = allCreatedSeriesRef.current.filter((entry) => {
-      if (entry?.id !== instanceId || currentSeries.has(entry?.series)) {
-        return true;
-      }
+    allCreatedSeriesRef.current = allCreatedSeriesRef.current.filter(
+      (entry) => {
+        if (entry?.id !== instanceId || currentSeries.has(entry?.series)) {
+          return true;
+        }
 
-      try {
-        chartRef.current?.removeSeries(entry.series);
-      } catch {}
-      return false;
-    });
+        try {
+          chartRef.current?.removeSeries(entry.series);
+        } catch {}
+        return false;
+      },
+    );
   }, []);
 
   const removeIndicator = useCallback(
@@ -5085,66 +5088,17 @@ json.dumps(result)
     }
 
     if (keysToShow) {
-      const hiddenKeys = [
-        "upperRSI",
-        "middleRSI",
-        "lowerRSI",
-        "middleBand",
-        "lowerBand",
-        "upperBand",
-        "zero",
-        "bgFill",
-        "bg",
-        "zeroLine",
-        "bandBackground",
-        "overboughtFill",
-        "oversoldFill",
-        "lowerLevel",
-        "upperLevel",
-        "center",
-        "oscillatorFill",
-        "bbLowerBand",
-        "bbUperBand",
-        "_bg",
-      ];
-
       return keysToShow
         .filter((key) => {
-          if (hiddenKeys.includes(key)) return false;
-
-          const config = indicatorConfigs[id] || indicatorConfigDefault[type];
-          const normalizedMaType = String(
-            config?.maType ?? config?.matype ?? config?.ma_type ?? "",
-          )
-            .trim()
-            .toLowerCase();
-
-          // Do not render values for MA-dependent lines when that MA is not plotted.
-          if (
-            normalizedMaType === "none" &&
-            ["smoothingMA", "bbUpper", "bbLower"].includes(key)
-          ) {
-            return false;
-          }
-          if (
-            ["bbUpper", "bbLower"].includes(key) &&
-            normalizedMaType !== "sma + bollinger bands"
-          ) {
-            return false;
-          }
-
-          const style =
-            indicatorStyle?.[id]?.[key] || indicatorStyle?.[type]?.[key];
-          if (style?.visible === false) return false;
-
-          // A line with an empty plotted data set is not shown in the legend.
-          const plottedData = group?.result?.data?.[key];
-          if (Array.isArray(plottedData) && plottedData.length === 0) {
-            return false;
-          }
-
-          // Return true even if the current crosshair value is null.
-          return true;
+          return isIndicatorKeyPlotted({
+            key,
+            type,
+            id,
+            indicatorConfigs,
+            indicatorConfigDefault,
+            indicatorStyle,
+            indicatorSeriesRef,
+          });
         })
         .map((key) => {
           const val = value ? value[key] : null;
@@ -6026,7 +5980,13 @@ json.dumps(result)
           : null,
       },
     );
-  }, [toDate, requestHistoricalData, selectedCurrency, timeframeValue, getLoadedCandleRange]);
+  }, [
+    toDate,
+    requestHistoricalData,
+    selectedCurrency,
+    timeframeValue,
+    getLoadedCandleRange,
+  ]);
 
   const flushPendingLiveBar = useCallback(() => {
     liveBarFlushTimerRef.current = null;
@@ -6167,7 +6127,12 @@ json.dumps(result)
       reconciliationRunningRef.current = false;
     }, 10000);
     return requested;
-  }, [selectedCurrency, timeframeValue, requestHistoricalData, getLoadedCandleRange]); // "?"? Central Socket Hook "?"?
+  }, [
+    selectedCurrency,
+    timeframeValue,
+    requestHistoricalData,
+    getLoadedCandleRange,
+  ]); // "?"? Central Socket Hook "?"?
   const normalizeCandle = useCallback((candle) => {
     if (!candle) return null;
     let time = Number(candle.time ?? candle.timestamp ?? candle.datetime);
@@ -6320,7 +6285,7 @@ json.dumps(result)
       );
       const isStaleGotoResponse = Boolean(
         requestId?.startsWith("goto-") &&
-          (!pendingGoto || requestId !== pendingGoto.requestId),
+        (!pendingGoto || requestId !== pendingGoto.requestId),
       );
 
       if (isStaleGotoResponse) {
@@ -6447,7 +6412,10 @@ json.dumps(result)
       if (raw.length === 0) {
         if (isGotoResponse && pendingGotoRef.current?.requestId === requestId) {
           pendingGotoRef.current = null;
-          console.log("[GoTo] request failed", { requestId, reason: "no candles" });
+          console.log("[GoTo] request failed", {
+            requestId,
+            reason: "no candles",
+          });
         }
         historicalMergeModeRef.current = "replace";
         pendingHistoricalFromDateRef.current = null;
@@ -6994,7 +6962,10 @@ json.dumps(result)
                 : [];
             });
 
-            if (!matchingKeys.length || matchingKeys.every((key) => previous[key] === ltp)) {
+            if (
+              !matchingKeys.length ||
+              matchingKeys.every((key) => previous[key] === ltp)
+            ) {
               return previous;
             }
 
@@ -7856,7 +7827,11 @@ json.dumps(result)
     }, 500);
 
     requestAnimationFrame(() => {
-      if (!chartRef.current || !containerRef.current || chartDisposedRef.current) {
+      if (
+        !chartRef.current ||
+        !containerRef.current ||
+        chartDisposedRef.current
+      ) {
         return;
       }
 
@@ -7877,8 +7852,18 @@ json.dumps(result)
       const candleDateIST = new Date(candleLocalMs + 5.5 * 60 * 60 * 1000);
       const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
       const months = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
       ];
       const dayName = weekdays[candleDateIST.getUTCDay()];
       const dd = String(candleDateIST.getUTCDate()).padStart(2, "0");
@@ -7887,8 +7872,17 @@ json.dumps(result)
       const hh = String(candleDateIST.getUTCHours()).padStart(2, "0");
       const mm = String(candleDateIST.getUTCMinutes()).padStart(2, "0");
       const isIntraday = [
-        "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h",
-        "60m", "120m", "240m",
+        "1m",
+        "3m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "4h",
+        "60m",
+        "120m",
+        "240m",
       ].includes(timeframeValue);
       const label = isIntraday
         ? `${dayName} ${dd} ${mon} '${String(yr).slice(-2)}\n${hh}:${mm}`
@@ -8046,7 +8040,47 @@ json.dumps(result)
   }, []);
 
   const isSidePanelOpen =
-    activeTab === `Alerts` || isWatchlistOpen || isDetailsOpen || isDepthOpen || isObjectTreeOpen;
+    activeTab === `Alerts` ||
+    isWatchlistOpen ||
+    isDetailsOpen ||
+    isDepthOpen ||
+    isObjectTreeOpen;
+
+  const subHeaderContentRef = useRef(null);
+  const [subHeaderContentHeight, setSubHeaderContentHeight] = useState(18);
+
+  useEffect(() => {
+    const el = subHeaderContentRef.current;
+    if (!el) return;
+
+    const updateHeight = () => {
+      const h = el.offsetHeight;
+      if (h) {
+        setSubHeaderContentHeight(h);
+      }
+    };
+
+    updateHeight();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => {
+        updateHeight();
+      });
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+  }, [
+    selectedCurrency,
+    timeframeValue,
+    isSidePanelOpen,
+    sidePanelWidth,
+    isFullscreen,
+  ]);
+
+  const isOhlcBelow = !isFullscreen && isSidePanelOpen && sidePanelWidth > 380;
+  const SUBHEADER_ROW_GAP = 5;
+  const indicatorBarTop =
+    8 + (subHeaderContentHeight || (isOhlcBelow ? 41 : 18)) + SUBHEADER_ROW_GAP;
 
   return (
     <>
@@ -8192,7 +8226,7 @@ json.dumps(result)
                     overflowX: "hidden",
                     overflowY: "hidden",
                     background: "var(--bg-secondary)",
-                    gap: "4px",
+                    gap: "2px",
                     paddingTop: "4px",
                   }}
                 >
@@ -8310,7 +8344,8 @@ json.dumps(result)
                                 height: 0,
                                 borderLeft: "5px solid transparent",
                                 borderRight: "5px solid transparent",
-                                borderTop: "5px solid var(--tooltip-bg, #3d3d3d)",
+                                borderTop:
+                                  "5px solid var(--tooltip-bg, #3d3d3d)",
                               }}
                             />
                           </div>
@@ -8463,6 +8498,7 @@ json.dumps(result)
                           flexDirection: "column",
                           gap: 8,
                           padding: "8px",
+                          maxWidth: "calc(100% - 16px)",
                         }}
                       >
                         <style>{`
@@ -8478,54 +8514,113 @@ json.dumps(result)
     }
   `}</style>
 
-                        <div className="d-flex align-items-center gap-2">
-                          {/* Symbol + Timeframe */}
-                          <span
-                            style={{
-                              fontSize: 13,
-                              color: "var(--text-secondary)",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {selectedCurrency?.name} : {timeframeValue}{" "}
-                            {selectedCurrency?.segment}
-                          </span>
-
-                          {/* Market status dot */}
-                          <div
-                            style={{
-                              position: "relative",
-                              width: 12,
-                              height: 12,
-                              flexShrink: 0,
-                            }}
-                          >
+                        <div
+                          ref={subHeaderContentRef}
+                          className="d-flex flex-wrap gap-x-3"
+                          style={{
+                            maxWidth: "100%",
+                            alignItems: "flex-start",
+                            justifyContent: "flex-start",
+                            textAlign: "left",
+                            rowGap: `${SUBHEADER_ROW_GAP}px`,
+                            flexDirection:
+                              !isFullscreen &&
+                              isSidePanelOpen &&
+                              sidePanelWidth > 380
+                                ? "column"
+                                : "row",
+                          }}
+                        >
+                          <div className="d-inline-flex align-items-center gap-2 flex-shrink-0">
+                            {/* Symbol + Timeframe */}
                             <span
-                              className="dot-ping"
                               style={{
-                                background: isMarketOpen
-                                  ? "#22c55e"
-                                  : "#f87171",
+                                fontSize: 13,
+                                color: "var(--text-secondary)",
+                                whiteSpace: "nowrap",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
                               }}
-                            />
-                            <span
+                            >
+                              {(() => {
+                                const logoSrc = getStockLogo(
+                                  selectedCurrency?.symbol,
+                                  selectedCurrency?.name,
+                                  selectedCurrency?.token ||
+                                    selectedCurrency?.code,
+                                );
+                                if (!logoSrc) return null;
+                                return (
+                                  <img
+                                    src={logoSrc}
+                                    alt={selectedCurrency?.name || "logo"}
+                                    style={{
+                                      width: 18,
+                                      height: 18,
+                                      borderRadius: "50%",
+                                      objectFit: "cover",
+                                      flexShrink: 0,
+                                    }}
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = "none";
+                                    }}
+                                  />
+                                );
+                              })()}
+                              {(() => {
+                                const fullName = getStockFullName(
+                                  selectedCurrency,
+                                  detailsList,
+                                );
+                                const tf = String(
+                                  timeframeValue || "1D",
+                                ).replace(/^(\d+)m$/i, "$1");
+                                const segment = String(
+                                  selectedCurrency?.segment ||
+                                    selectedCurrency?.exchange ||
+                                    "NSE",
+                                ).replace(/_EQ$/, "");
+                                return `${fullName} · ${tf} · ${segment}`;
+                              })()}
+                            </span>
+
+                            {/* Market status dot */}
+                            <div
                               style={{
-                                display: "block",
+                                position: "relative",
                                 width: 12,
                                 height: 12,
-                                borderRadius: "50%",
-                                background: isMarketOpen
-                                  ? "#22c55e"
-                                  : "#f87171",
-                                position: "relative",
+                                flexShrink: 0,
                               }}
-                            />
+                            >
+                              <span
+                                className="dot-ping"
+                                style={{
+                                  background: isMarketOpen
+                                    ? "#22c55e"
+                                    : "#f87171",
+                                }}
+                              />
+                              <span
+                                style={{
+                                  display: "block",
+                                  width: 12,
+                                  height: 12,
+                                  borderRadius: "50%",
+                                  background: isMarketOpen
+                                    ? "#22c55e"
+                                    : "#f87171",
+                                  position: "relative",
+                                }}
+                              />
+                            </div>
                           </div>
 
                           {/* OHLC Values */}
                           {/* OHLC Values - direct DOM, zero re-render */}
                           <div
-                            className="d-none d-md-flex align-items-center gap-1"
+                            className="d-none d-md-flex align-items-center gap-1 flex-wrap"
                             ref={ohlcvDisplayRef}
                             style={{
                               opacity: currentCandleRef.current ? 1 : 0,
@@ -8715,12 +8810,15 @@ json.dumps(result)
                           <div
                             style={{
                               position: "absolute",
-                              top: 40,
-                              left: 4,
+                              top: indicatorBarTop,
+                              left: 6,
                               display: "flex",
                               flexDirection: "column",
                               gap: 2,
                               zIndex: 50,
+                              transition: isResizingSidePanel
+                                ? "none"
+                                : "top 0.15s ease",
                             }}
                           >
                             {!areIndicatorLegendsCollapsed &&
@@ -9047,19 +9145,36 @@ json.dumps(result)
                   <div
                     className={`left-panel-mobile ${!isFullscreen && isSidePanelOpen ? "is-open" : ""}`}
                     style={{
-                      width: !isFullscreen && isSidePanelOpen ? `${sidePanelWidth}px` : "0px",
+                      width:
+                        !isFullscreen && isSidePanelOpen
+                          ? `${sidePanelWidth}px`
+                          : "0px",
                       opacity: !isFullscreen && isSidePanelOpen ? 1 : 0,
                       overflow: "hidden",
                       height: "100%",
-                      transition: isResizingSidePanel ? "none" :
-                        "width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                      transition: isResizingSidePanel
+                        ? "none"
+                        : "width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
                       flexShrink: 0,
                       background: "var(--bg-primary)",
                       borderTopLeftRadius: "10px",
                     }}
                   >
-                    <div style={{ width: `${sidePanelWidth}px`, height: "100%", background: "var(--bg-primary)", borderTopLeftRadius: "10px", overflow: "hidden" }}>
-                      <div style={{ display: activeTab === "Alerts" ? "block" : "none", height: "100%" }}>
+                    <div
+                      style={{
+                        width: `${sidePanelWidth}px`,
+                        height: "100%",
+                        background: "var(--bg-primary)",
+                        borderTopLeftRadius: "10px",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: activeTab === "Alerts" ? "block" : "none",
+                          height: "100%",
+                        }}
+                      >
                         <LeftAlertListing
                           onClose={() => setActiveTab(`Chart`)}
                           alertResult={customSignals}
@@ -9068,7 +9183,15 @@ json.dumps(result)
                           setActiveTab={setActiveTab}
                         />
                       </div>
-                      <div style={{ display: activeTab !== "Alerts" && isWatchlistOpen ? "block" : "none", height: "100%" }}>
+                      <div
+                        style={{
+                          display:
+                            activeTab !== "Alerts" && isWatchlistOpen
+                              ? "block"
+                              : "none",
+                          height: "100%",
+                        }}
+                      >
                         <LeftWatchlist
                           onClose={() => setIsWatchlistOpen(false)}
                           selectedCurrency={selectedCurrency}
@@ -9079,7 +9202,15 @@ json.dumps(result)
                           liveLtpBySymbol={liveLtpBySymbol}
                         />
                       </div>
-                      <div style={{ display: activeTab !== "Alerts" && isDetailsOpen ? "block" : "none", height: "100%" }}>
+                      <div
+                        style={{
+                          display:
+                            activeTab !== "Alerts" && isDetailsOpen
+                              ? "block"
+                              : "none",
+                          height: "100%",
+                        }}
+                      >
                         <LeftDetail
                           onClose={() => setIsDetailsOpen(false)}
                           selectedCurrency={selectedCurrency}
@@ -9093,7 +9224,15 @@ json.dumps(result)
                           openScannerTrigger={openScannerTrigger}
                         />
                       </div>
-                      <div style={{ display: activeTab !== "Alerts" && isDepthOpen ? "block" : "none", height: "100%" }}>
+                      <div
+                        style={{
+                          display:
+                            activeTab !== "Alerts" && isDepthOpen
+                              ? "block"
+                              : "none",
+                          height: "100%",
+                        }}
+                      >
                         <LeftDepth
                           onClose={() => {
                             setIsDepthOpen(false);
@@ -9106,7 +9245,15 @@ json.dumps(result)
                           predictionStatus={predictionStatus}
                         />
                       </div>
-                      <div style={{ display: activeTab !== "Alerts" && isObjectTreeOpen ? "block" : "none", height: "100%" }}>
+                      <div
+                        style={{
+                          display:
+                            activeTab !== "Alerts" && isObjectTreeOpen
+                              ? "block"
+                              : "none",
+                          height: "100%",
+                        }}
+                      >
                         <LeftObjectTree
                           onClose={() => setIsObjectTreeOpen(false)}
                           selectedCurrency={selectedCurrency}
@@ -9121,6 +9268,12 @@ json.dumps(result)
                           liveIndicatorData={liveIndicatorData}
                           candlesRef={candlesRef}
                           liveLtpBySymbol={liveLtpBySymbol}
+                          chartRef={chartRef}
+                          seriesRef={seriesRef}
+                          indicatorSeriesRef={indicatorSeriesRef}
+                          indicatorDataRef={indicatorDataRef}
+                          panesRef={panesRef}
+                          indicatorStyle={indicatorStyle}
                         />
                       </div>
                     </div>
@@ -9133,7 +9286,9 @@ json.dumps(result)
                         width: "56px",
                         height: "100%",
                         flexShrink: 0,
-                        borderLeft: isSidePanelOpen ? "1px solid var(--border-color)" : "none",
+                        borderLeft: isSidePanelOpen
+                          ? "1px solid var(--border-color)"
+                          : "none",
                         background: "var(--bg-primary)",
                         zIndex: 50,
                         borderTopLeftRadius: isSidePanelOpen ? "0px" : "10px",
@@ -9142,9 +9297,12 @@ json.dumps(result)
                     >
                       <RightSidebar
                         isSidePanelOpen={isSidePanelOpen}
-                        isWatchlistOpen={activeTab !== "Alerts" && isWatchlistOpen}
+                        isWatchlistOpen={
+                          activeTab !== "Alerts" && isWatchlistOpen
+                        }
                         toggleWatchlist={() => {
-                          const willOpen = activeTab === "Alerts" ? true : !isWatchlistOpen;
+                          const willOpen =
+                            activeTab === "Alerts" ? true : !isWatchlistOpen;
                           if (activeTab === "Alerts") setActiveTab("Chart");
                           setIsWatchlistOpen(willOpen);
                           if (willOpen) {
@@ -9153,9 +9311,12 @@ json.dumps(result)
                             setIsObjectTreeOpen(false);
                           }
                         }}
-                        isObjectTreeOpen={activeTab !== "Alerts" && isObjectTreeOpen}
+                        isObjectTreeOpen={
+                          activeTab !== "Alerts" && isObjectTreeOpen
+                        }
                         toggleObjectTree={() => {
-                          const willOpen = activeTab === "Alerts" ? true : !isObjectTreeOpen;
+                          const willOpen =
+                            activeTab === "Alerts" ? true : !isObjectTreeOpen;
                           if (activeTab === "Alerts") setActiveTab("Chart");
                           setIsObjectTreeOpen(willOpen);
                           if (willOpen) {
@@ -9190,7 +9351,10 @@ json.dumps(result)
                           const willOpen = !isDepthOpen;
                           if (activeTab === "Alerts") setActiveTab("Chart");
                           setIsDepthOpen(willOpen);
-                          localStorage.setItem("leftDepthOpen", String(willOpen));
+                          localStorage.setItem(
+                            "leftDepthOpen",
+                            String(willOpen),
+                          );
                           if (willOpen) {
                             setIsWatchlistOpen(false);
                             setIsDetailsOpen(false);
@@ -9223,8 +9387,15 @@ json.dumps(result)
                       isDeploying={isDeploying}
                       isSaving={isSavingStrategy}
                       isUpdating={isUpdatingStrategy}
-                      canShowUpdate={Boolean(activeStrategyRecord?.id || activeStrategyRecord?._id)}
-                      loadedStrategyName={activeStrategyRecord?.strategyName || activeStrategyRecord?.name || draftStrategyName || "Untitled"}
+                      canShowUpdate={Boolean(
+                        activeStrategyRecord?.id || activeStrategyRecord?._id,
+                      )}
+                      loadedStrategyName={
+                        activeStrategyRecord?.strategyName ||
+                        activeStrategyRecord?.name ||
+                        draftStrategyName ||
+                        "Untitled"
+                      }
                     />
                   )}
 
@@ -9535,7 +9706,6 @@ json.dumps(result)
                 )}
               </div>
             </div>
-
           </div>
         </div>
         {/* <SourceCodePanel

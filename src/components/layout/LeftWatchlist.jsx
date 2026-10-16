@@ -220,7 +220,7 @@ const DEFAULT_SETTINGS = {
     change: true,
     changePercent: true,
     volume: false,
-    extendedHours: false,
+    // extendedHours: false,
   },
   display: {
     logo: true,
@@ -511,7 +511,7 @@ const LeftWatchlist = ({
               <span className="text-[12px] text-fg select-none leading-none">Volume</span>
             </label>
 
-            <label className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-surface-2 rounded-xs select-none">
+            {/* <label className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-surface-2 rounded-xs select-none">
               <input
                 type="checkbox"
                 checked={settings.columns.extendedHours}
@@ -520,7 +520,7 @@ const LeftWatchlist = ({
               />
               <CustomCheckbox checked={settings.columns.extendedHours} />
               <span className="text-[12px] text-fg select-none leading-none">Extended Hours</span>
-            </label>
+            </label> */}
           </div>
 
           <div className="my-1.5 h-px bg-line" />
@@ -682,9 +682,9 @@ const LeftWatchlist = ({
                 )}
               </button>
             )}
-            {settings.columns.extendedHours && (
+            {/* {settings.columns.extendedHours && (
               <span className="w-14 min-w-0 shrink text-right truncate">Ext</span>
-            )}
+            )} */}
           </div>
         </div>
       ) : (
@@ -861,11 +861,11 @@ const LeftWatchlist = ({
                       {stock.volume ? stock.volume : "—"}
                     </span>
                   )}
-                  {settings.columns.extendedHours && (
+                  {/* {settings.columns.extendedHours && (
                     <span className="w-14 min-w-0 shrink text-right text-[12px] num text-fg-muted truncate">
                       {stock.extHours ? stock.extHours : "—"}
                     </span>
-                  )}
+                  )} */}
                 </div>
               </div>
             );

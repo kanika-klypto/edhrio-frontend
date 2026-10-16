@@ -1,6 +1,6 @@
 # WebSocket Usage Documentation
 
-This document outlines the entire WebSocket infrastructure, event dictionary, and component-level usage within the Klypto Share Marketing Frontend application.
+This document outlines the entire WebSocket infrastructure, event dictionary, and component-level usage within the Edhrio Share Marketing Frontend application.
 
 ## 1. Connection Architecture
 
