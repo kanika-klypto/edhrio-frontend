@@ -1,0 +1,31 @@
+export default function STDDEVInput(
+  response,
+  indicatorSeriesRef,
+  latestIndicatorValuesRef
+, instanceId) {
+  const rows = Array.isArray(response?.data) ? response.data : [];
+
+  const STDDEVData = rows
+    .filter((d) => (d.stddev != null || d.value != null) && d.time != null)
+    .map((d) => ({
+      time: Number(d.time) + 19800,
+      value: Number(d.stddev ?? d.value),
+    }))
+    .sort((a, b) => a.time - b.time);
+
+  const series = indicatorSeriesRef.current?.[instanceId || "STDDEV"];
+  if (!series) return;
+
+  /* 🔥 UPDATE */
+  series.stddev?.setData(STDDEVData);
+
+  /* 🔥 VALUES */
+  latestIndicatorValuesRef.current[instanceId || "STDDEV"] = {
+    value: STDDEVData.at(-1)?.value,
+  };
+
+  /* 🔥 STORE */
+  indicatorSeriesRef.current[instanceId || "STDDEV"].result = {
+    data: STDDEVData,
+  };
+}

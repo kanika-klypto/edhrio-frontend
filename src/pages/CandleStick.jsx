@@ -1,0 +1,9566 @@
+import { throttleChartEvents } from "../util/throttleChartEvents";
+import {
+  createChart,
+  CandlestickSeries,
+  LineSeries,
+  BarSeries,
+  AreaSeries,
+  HistogramSeries,
+  BaselineSeries,
+  createSeriesMarkers,
+} from "lightweight-charts";
+import React from "react";
+import { createPortal } from "react-dom";
+import { LuCirclePlus, LuCircleMinus } from "react-icons/lu";
+import { IoChevronDown, IoChevronUp } from "react-icons/io5";
+import { RiResetRightLine } from "react-icons/ri";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import ChartHeader from "../components/tradingModals/ChartHeader";
+import LeftWatchlist from "../components/layout/LeftWatchlist";
+import RightSidebar from "../components/layout/RightSidebar";
+import LeftDepth from "../components/layout/LeftDepth";
+import useSocket from "../util/useSocket";
+import EVENTS from "../services/websocket/socketEvent";
+import {
+  ChartProprties,
+  TIMEFRAME_TO_SECONDS,
+  SINGLE_VALUE_CHARTS,
+  chartSeriesStyles,
+  convertToHeikinAshi,
+  getIndicatorChartProperties,
+} from "../util/common";
+import SourceCodePanel from "../components/indicator/SourceCodePanel";
+import IndicatorAlert from "../components/indicator/IndicatorAlert";
+import IndicatorPropertyDialog from "../components/indicator/IndicatorPropertyDialog";
+import useChartFunctions from "../util/useChartFunctions";
+import { indicatorComponents } from "../components/indicator/IndicatorIndex";
+import { Spinner } from "../components/tradingModals/Spinner";
+import IndicatorBar from "../components/indicator/IndicatorBar";
+import LeftDetail from "../components/layout/LeftDetail";
+import LeftObjectTree from "../components/layout/LeftObjectTree";
+import Overview from "../components/tradingModals/Overview";
+import OptionChain from "../components/tradingModals/OptionChain";
+import LeftAlertListing from "../components/layout/LeftAlertListing";
+import {
+  indicatorConfigDefault,
+  resolvePaneKey,
+  indicatorStyleDefault,
+  PANE_INDICATORS,
+} from "../util/indicatorFunctions";
+import { getStrategySocket } from "../services/websocket/socket";
+import { toast } from "react-toastify";
+import useAlerts from "../util/useAlerts";
+import CodeEditorPanel, {
+  DEFAULT_EDITOR_CODE,
+} from "../components/layout/CodeEditorPanel";
+import StrategyAgentPanel from "../components/layout/StrategyAgentPanel";
+import OIAnalytics from "../components/tradingModals/OIAnalytics";
+import Swal from "sweetalert2";
+import apiService from "../services/apiServices";
+import {
+  saveNotebookStrategy,
+  updateNotebookStrategy,
+} from "../services/notebookStrategyService";
+import { generateStrategyAgent } from "../services/strategyAgentService";
+import { executeIndicatorSandbox } from "../services/sandboxService";
+import { getUser } from "./auth/protected";
+import useDrawingTools from "../util/useDrawingTools";
+import DrawingToolbar from "../components/tradingModals/DrawingToolbar";
+import DrawingToolbox from "../components/tradingModals/DrawingToolbox";
+
+const getInitialLookbackDate = (timeframe) => {
+  const d = new Date();
+  if (["1m", "5m"].includes(timeframe)) {
+    d.setDate(d.getDate() - 15);
+  } else if (["15m", "30m"].includes(timeframe)) {
+    d.setDate(d.getDate() - 30);
+  } else if (["1h", "2h", "4h", "6h", "1d", "1w"].includes(timeframe)) {
+    d.setDate(d.getDate() - 90);
+  } else {
+    d.setFullYear(d.getFullYear() - 1);
+  }
+  return d;
+};
+
+const getTodayDateString = () => new Date().toISOString().split("T")[0];
+const SANDBOX_DEPLOYMENT_CODE = "SANDBOX_EXECUTION";
+const CHART_TIME_OFFSET_SECONDS = 19800;
+const MIN_HISTORICAL_DATE = "2024-10-01";
+const SANDBOX_OVERLAY_KEY = "__sandbox_overlay__";
+const DETAILS_WATCHLIST_STORAGE_KEY = "chart_detailsWatchlist";
+
+const isWithinReconciliationWindow = (date = new Date()) => {
+  const istTime = new Date(
+    date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }),
+  );
+  const day = istTime.getDay();
+  const minutes = istTime.getHours() * 60 + istTime.getMinutes();
+
+  return (
+    day >= 1 && day <= 5 && minutes >= 9 * 60 + 15 && minutes <= 15 * 60 + 15
+  );
+};
+const WINDOWS_1252_BYTE_BY_CODE_POINT = new Map([
+  [0x20ac, 0x80],
+  [0x201a, 0x82],
+  [0x0192, 0x83],
+  [0x201e, 0x84],
+  [0x2026, 0x85],
+  [0x2020, 0x86],
+  [0x2021, 0x87],
+  [0x02c6, 0x88],
+  [0x2030, 0x89],
+  [0x0160, 0x8a],
+  [0x2039, 0x8b],
+  [0x0152, 0x8c],
+  [0x017d, 0x8e],
+  [0x2018, 0x91],
+  [0x2019, 0x92],
+  [0x201c, 0x93],
+  [0x201d, 0x94],
+  [0x2022, 0x95],
+  [0x2013, 0x96],
+  [0x2014, 0x97],
+  [0x02dc, 0x98],
+  [0x2122, 0x99],
+  [0x0161, 0x9a],
+  [0x203a, 0x9b],
+  [0x0153, 0x9c],
+  [0x017e, 0x9e],
+  [0x0178, 0x9f],
+]);
+
+const repairMojibake = (value) => {
+  let text = String(value || "");
+  const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
+  for (
+    let attempt = 0;
+    attempt < 3 && /[\u00C3\u00C2\u00E2]/.test(text);
+    attempt += 1
+  ) {
+    const bytes = [];
+    let canDecode = true;
+    for (const character of text) {
+      const codePoint = character.codePointAt(0);
+      const byte =
+        WINDOWS_1252_BYTE_BY_CODE_POINT.get(codePoint) ??
+        (codePoint <= 0xff ? codePoint : null);
+      if (byte === null) {
+        canDecode = false;
+        break;
+      }
+      bytes.push(byte);
+    }
+    if (!canDecode) break;
+
+    try {
+      const repaired = utf8Decoder.decode(new Uint8Array(bytes));
+      if (repaired === text) break;
+      text = repaired;
+    } catch {
+      break;
+    }
+  }
+
+  return text;
+};
+const createAgentMessage = (role, content, extras = {}) => ({
+  id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  role,
+  content,
+  ...extras,
+});
+
+const buildStrategyAgentPrompt = (editorCode, symbol, timeframe) =>
+  `
+Convert the current strategy editor content into runnable ChartLab-compatible Python for sandbox execution.
+
+Requirements:
+- Preserve the strategy intent from the editor code below.
+- Return only executable Python code, with no markdown fences or explanation.
+- Use ChartLab-compatible Python when needed.
+- Emit trade markers with signal(...) when possible.
+- If the existing code is already runnable ChartLab-compatible Python, keep the logic and return the final code.
+- The chart symbol is ${symbol || "the selected symbol"} on timeframe ${timeframe || "the selected timeframe"}.
+
+Current editor code:
+${editorCode}
+`.trim();
+
+const isDirectChartLabScript = (code) => {
+  const text = String(code || "");
+  return (
+    /from\s+chartlab\s+import/i.test(text) &&
+    /@indicator\s*\(/i.test(text) &&
+    /def\s+run\s*\(\s*ctx\s*\)\s*:/i.test(text)
+  );
+};
+
+const normalizeChartTime = (rawTime) => {
+  if (rawTime === null || rawTime === undefined || rawTime === "") {
+    return null;
+  }
+
+  if (typeof rawTime === "number" && Number.isFinite(rawTime)) {
+    return rawTime > 1e12 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+  }
+
+  const numericTime = Number(rawTime);
+  if (Number.isFinite(numericTime)) {
+    return numericTime > 1e12
+      ? Math.floor(numericTime / 1000)
+      : Math.floor(numericTime);
+  }
+
+  const parsedTime = new Date(rawTime).getTime();
+  if (Number.isNaN(parsedTime)) {
+    return null;
+  }
+
+  return Math.floor(parsedTime / 1000);
+};
+
+const toSeriesValue = (point) => {
+  const time = normalizeChartTime(point?.time);
+  const value =
+    typeof point?.value === "number" && Number.isFinite(point.value)
+      ? point.value
+      : null;
+
+  if (time === null) {
+    return null;
+  }
+
+  const chartTime = time + CHART_TIME_OFFSET_SECONDS;
+  if (value === null) {
+    return { time: chartTime };
+  }
+
+  return { time: chartTime, value };
+};
+
+const toChartTimestamp = (rawTime) => {
+  const time = normalizeChartTime(rawTime);
+  return time === null ? null : time + CHART_TIME_OFFSET_SECONDS;
+};
+
+const getSandboxLegendDomId = (paneKey, itemId) => {
+  const safePane = String(paneKey || SANDBOX_OVERLAY_KEY).replace(
+    /[^a-zA-Z0-9_-]+/g,
+    "_",
+  );
+  const safeItem = String(itemId || "plot").replace(/[^a-zA-Z0-9_-]+/g, "_");
+  return `sandbox-legend-${safePane}-${safeItem}`;
+};
+
+const resolveSandboxBarColor = (colorByTime, candleTime) => {
+  if (!(colorByTime instanceof Map) || candleTime === null) return null;
+  return (
+    colorByTime.get(candleTime) ??
+    colorByTime.get(candleTime - CHART_TIME_OFFSET_SECONDS) ??
+    colorByTime.get(candleTime + CHART_TIME_OFFSET_SECONDS) ??
+    null
+  );
+};
+
+const mergeHistoricalSeries = (existing, incoming, mode = "replace") => {
+  if (mode === "replace" || !Array.isArray(existing) || existing.length === 0) {
+    return incoming;
+  }
+
+  const merged = new Map();
+  existing.forEach((candle) => merged.set(candle.time, candle));
+  incoming.forEach((candle) => merged.set(candle.time, candle));
+
+  return Array.from(merged.values()).sort((a, b) => a.time - b.time);
+};
+
+const getBackfillChunkDays = (timeframe) => {
+  if (["1m", "3m", "5m"].includes(timeframe)) return 15;
+  if (["10m", "15m", "30m"].includes(timeframe)) return 30;
+  if (["1h", "2h", "4h", "60m", "120m", "240m"].includes(timeframe)) return 60;
+  return 365;
+};
+
+const formatBacktestDateTime = (chartTime) => {
+  if (!Number.isFinite(chartTime)) return "--";
+
+  return new Date(
+    (chartTime - CHART_TIME_OFFSET_SECONDS) * 1000,
+  ).toLocaleString("en-IN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+};
+
+const getSignalBacktestOhlc = (signal, matchedCandle) => {
+  const signalResponse = signal?.response || {};
+
+  const pickValue = (primary, fallback) => {
+    const value = primary ?? fallback;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  return {
+    open: pickValue(matchedCandle?.open, signalResponse.candle_open),
+    high: pickValue(matchedCandle?.high, signalResponse.candle_high),
+    low: pickValue(matchedCandle?.low, signalResponse.candle_low),
+    close: pickValue(matchedCandle?.close, signalResponse.candle_close),
+  };
+};
+
+const normalizeApiBacktestRows = (
+  tables,
+  fallbackSymbol,
+  fallbackTimeframe,
+) => {
+  if (!Array.isArray(tables) || tables.length === 0) return [];
+
+  const targetTable =
+    tables.find((table) => table?.name === "signal_events") ||
+    tables.find((table) => table?.title === "Signal Events") ||
+    tables.find((table) => {
+      const columns = Array.isArray(table?.columns) ? table.columns : [];
+      return (
+        columns.includes("datetime") &&
+        columns.includes("open") &&
+        columns.includes("high") &&
+        columns.includes("low") &&
+        columns.includes("close")
+      );
+    });
+
+  if (!targetTable || !Array.isArray(targetTable.rows)) return [];
+
+  return targetTable.rows
+    .map((row, index) => {
+      const rawTime = normalizeChartTime(row?.time);
+      const chartTime =
+        rawTime === null ? null : rawTime + CHART_TIME_OFFSET_SECONDS;
+      const signalType = String(
+        row?.signal || row?.side || row?.label || "SIGNAL",
+      ).toUpperCase();
+
+      return {
+        id: `${chartTime || row?.datetime || "row"}-${signalType}-${index}`,
+        signalType,
+        label: row?.label || signalType,
+        symbol: row?.symbol || fallbackSymbol || "--",
+        timeframe: row?.timeframe || fallbackTimeframe || "--",
+        dateTime:
+          row?.datetime ||
+          (Number.isFinite(chartTime)
+            ? formatBacktestDateTime(chartTime)
+            : "--"),
+        time: chartTime,
+        open: Number.isFinite(Number(row?.open)) ? Number(row.open) : null,
+        high: Number.isFinite(Number(row?.high)) ? Number(row.high) : null,
+        low: Number.isFinite(Number(row?.low)) ? Number(row.low) : null,
+        close: Number.isFinite(Number(row?.close)) ? Number(row.close) : null,
+      };
+    })
+    .filter(
+      (row) =>
+        row.dateTime !== "--" ||
+        Number.isFinite(row.open) ||
+        Number.isFinite(row.high) ||
+        Number.isFinite(row.low) ||
+        Number.isFinite(row.close),
+    );
+};
+
+export default function Candlestick() {
+  const chartRef = useRef();
+  const containerRef = useRef();
+  const paneContainerRef = useRef();
+  const seriesRef = useRef(null);
+  const indicatorSeriesRef = useRef({});
+  const latestIndicatorValuesRef = useRef({});
+  const indicatorDataRef = useRef({});
+  const panesRef = useRef({});
+  const paneIndexRef = useRef({});
+  const dummySeriesRef = useRef({});
+  const chartDisposedRef = useRef(false);
+  const allCreatedSeriesRef = useRef([]);
+  const syncingRef = useRef(false);
+  const fetchedIndicatorsRef = useRef(new Set());
+  const socketRef = useRef(null);
+  const indicatorFailureCountRef = useRef(new Map());
+  const indicatorBlockedRef = useRef(new Set());
+  const indicatorInFlightRef = useRef(new Set());
+  const indicatorErrorShownRef = useRef(new Set());
+  const MAX_INDICATOR_FAILURES = 1;
+  const chartIndicatorHandlerRef = useRef(null);
+  const customScriptSeriesRef = useRef(null);
+  const customScriptMarkersRef = useRef(null);
+  const customScriptPriceLinesRef = useRef([]);
+  const customScriptFillLayersRef = useRef([]);
+  const customScriptPaneKeysRef = useRef([]);
+  const customScriptBarColorsAppliedRef = useRef(false);
+  const customScriptBarColorMapRef = useRef(null);
+  const lastDeployedMarkersRef = useRef(null);
+  const scannerIntervalRef = useRef(null);
+  const pyodideRef = useRef(null);
+  const strategyAgentSessionIdRef = useRef(null);
+  const sandboxSessionIdRef = useRef(null);
+  const lastIndicatorRequestRef = useRef(0);
+  const lastHistoricalRequestRef = useRef({ key: null, at: 0 });
+  const lastLiveTickRequestRef = useRef({ key: null, at: 0 });
+  const historicalMergeModeRef = useRef("replace");
+  const pendingHistoricalFromDateRef = useRef(null);
+  const pendingHistoricalToDateRef = useRef(null);
+  const suppressNextHistoricalReloadRef = useRef(false);
+  const suppressNextIndicatorContextFetchRef = useRef(false);
+  const pendingGotoRef = useRef(null);
+  const historicalRequestOptionsRef = useRef(new Map());
+  const activeHistoricalRequestRef = useRef(null);
+  const latestReplaceRequestIdRef = useRef(null);
+  const historicalVisibleRangeRef = useRef(null);
+  const historyBackfillInFlightRef = useRef(false);
+  const lastAutoBackfillFromRef = useRef(null);
+  const lastAutoForwardToRef = useRef(null);
+  const backfillTimeoutRef = useRef(null);
+  const inFlightBackfillModeRef = useRef(null);
+  const [isDeployed, setIsDeployed] = useState(false);
+
+  const applySandboxBarColorsToData = useCallback(
+    (candles, kind = "candlestick") => {
+      if (!Array.isArray(candles) || candles.length === 0) return candles;
+      const colorByTime = customScriptBarColorMapRef.current;
+      if (!(colorByTime instanceof Map) || colorByTime.size === 0) {
+        return kind === "heikinashi" ? convertToHeikinAshi(candles) : candles;
+      }
+
+      const baseCandles =
+        kind === "heikinashi" ? convertToHeikinAshi(candles) : candles;
+
+      return baseCandles.map((candle) => {
+        const candleTime = normalizeChartTime(candle?.time);
+        const overrideColor = resolveSandboxBarColor(colorByTime, candleTime);
+        if (!overrideColor) return candle;
+        return {
+          ...candle,
+          color: overrideColor,
+        };
+      });
+    },
+    [],
+  );
+
+  const normalize = (s) => s?.replace(/\s+/g, " ").trim().toUpperCase();
+  const isSameSymbolName = (s1, s2) => {
+    if (!s1 || !s2) return false;
+    const n1 = normalize(s1).split("-")[0];
+    const n2 = normalize(s2).split("-")[0];
+    return n1 === n2;
+  };
+
+  const isSameSymbol = (a, b) =>
+    a?.symbol === b?.symbol && a?.token === b?.token;
+
+  const { matchedCoins, addAlert, clearAllCoins, scanner, removeCoin } =
+    useAlerts();
+
+  const [isWatchlistOpen, setIsWatchlistOpen] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isObjectTreeOpen, setIsObjectTreeOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [sidePanelWidth, setSidePanelWidth] = useState(() => {
+    const saved = localStorage.getItem("sidePanelWidth");
+    return saved ? Math.max(200, parseInt(saved, 10)) : 300;
+  });
+  const [isResizingSidePanel, setIsResizingSidePanel] = useState(false);
+
+  const handleSidePanelResizeStart = useCallback((e) => {
+    e.preventDefault();
+    setIsResizingSidePanel(true);
+    const startX = e.clientX;
+    const startWidth = sidePanelWidth;
+
+    const handleMouseMove = (moveEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const maxWidth = Math.floor(window.innerWidth * 0.7);
+      const newWidth = Math.max(200, Math.min(maxWidth, startWidth + delta));
+      setSidePanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingSidePanel(false);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setSidePanelWidth((current) => {
+        localStorage.setItem("sidePanelWidth", String(current));
+        return current;
+      });
+      window.dispatchEvent(new Event("resize"));
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [sidePanelWidth]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+  const [predictionStatus, setPredictionStatus] = useState(null);
+
+  useEffect(() => {
+    console.log(
+      "[DEBUG CandleStick] predictionStatus state changed to:",
+      predictionStatus,
+    );
+  }, [predictionStatus]);
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [isFetchingCandles, setIsFetchingCandles] = useState(false);
+  const [isDepthOpen, setIsDepthOpen] = useState(false);
+  const [isAgentPanelOpen, setIsAgentPanelOpen] = useState(false);
+  const [agentMessages, setAgentMessages] = useState([]);
+  const [agentDraft, setAgentDraft] = useState("");
+  const [isAgentLoading, setIsAgentLoading] = useState(false);
+
+  const deduplicateTrades = (trades) => {
+    if (!trades || !Array.isArray(trades)) return [];
+
+    const bestVersions = new Map();
+    trades.forEach((trade) => {
+      const sym = trade?.symbol;
+      let tStr =
+        trade?.tick?.datetime ||
+        trade?.response?.entry_time ||
+        trade?.timestamp;
+      let timeKey = tStr;
+      if (tStr) {
+        const d = new Date(tStr);
+        if (!isNaN(d.getTime())) timeKey = d.getTime();
+      }
+      const key = `${sym}_${timeKey}`;
+
+      const existing = bestVersions.get(key);
+      if (
+        !existing ||
+        (trade?.response?.rsi !== undefined &&
+          existing?.response?.rsi === undefined)
+      ) {
+        bestVersions.set(key, trade);
+      }
+    });
+
+    const seen = new Set();
+    const result = [];
+    trades.forEach((trade) => {
+      const sym = trade?.symbol;
+      let tStr =
+        trade?.tick?.datetime ||
+        trade?.response?.entry_time ||
+        trade?.timestamp;
+      let timeKey = tStr;
+      if (tStr) {
+        const d = new Date(tStr);
+        if (!isNaN(d.getTime())) timeKey = d.getTime();
+      }
+      const key = `${sym}_${timeKey}`;
+
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(bestVersions.get(key));
+      }
+    });
+
+    return result;
+  };
+
+  const [predictResultData, setPredictResultData] = useState([]);
+  const [detailsList, setDetailsList] = useState(() => {
+    try {
+      const saved = localStorage.getItem(DETAILS_WATCHLIST_STORAGE_KEY);
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      console.warn("Failed to read Details watchlist from localStorage", error);
+      return [];
+    }
+  });
+  const [liveLtpBySymbol, setLiveLtpBySymbol] = useState({});
+  const [activeTab, setActiveTab] = useState("Chart");
+  const [timeframeValue, setTimeframeValue] = useState("5m");
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        DETAILS_WATCHLIST_STORAGE_KEY,
+        JSON.stringify(detailsList),
+      );
+    } catch (error) {
+      console.warn("Failed to save Details watchlist to localStorage", error);
+    }
+  }, [detailsList]);
+  const [selectedCurrency, setSelectedCurrency] = useState(() => {
+    try {
+      const raw = localStorage.getItem("selectedCurrency");
+      if (raw) return JSON.parse(raw);
+    } catch (e) {
+      console.warn("Failed to read selectedCurrency from localStorage", e);
+    }
+    return {
+      name: "TCS",
+      token: "11536",
+      segment: "NSE",
+      exchange: "NSE",
+    };
+  });
+
+  // Preserve the existing selection when a selector is clicked again for the
+  // same instrument. Returning `prev` keeps React from rerunning the chart
+  // reload effect and emitting another historical-data request.
+  const handleSetSelectedCurrency = useCallback((nextCurrencyOrUpdater) => {
+    setSelectedCurrency((prev) => {
+      const next =
+        typeof nextCurrencyOrUpdater === "function"
+          ? nextCurrencyOrUpdater(prev)
+          : nextCurrencyOrUpdater;
+
+      if (!prev || !next) return next;
+
+      const prevToken = String(prev.token ?? "").trim();
+      const nextToken = String(next.token ?? "").trim();
+      const prevSymbol = String(prev.symbol || prev.name || "")
+        .trim()
+        .toUpperCase();
+      const nextSymbol = String(next.symbol || next.name || "")
+        .trim()
+        .toUpperCase();
+      const isSameCurrency =
+        (prevToken && nextToken && prevToken === nextToken) ||
+        ((!prevToken || !nextToken) &&
+          prevSymbol &&
+          nextSymbol &&
+          prevSymbol === nextSymbol);
+
+      return isSameCurrency ? prev : next;
+    });
+  }, []);
+
+  const {
+    activeTool,
+    setActiveTool,
+    clearAllDrawings,
+    selectedLine,
+    toolboxPos,
+    updateLine,
+    deleteLine,
+    closeToolbox,
+  } = useDrawingTools({
+    chartRef,
+    seriesRef,
+    containerRef,
+    symbol: selectedCurrency?.symbol || selectedCurrency?.name,
+    interval: timeframeValue,
+  });
+
+  const [activePropertyDialog, setActivePropertyDialog] = useState(null);
+  const [fromDate, setFromDate] = useState(() => {
+    try {
+      const saved = localStorage.getItem("chart_fromDate");
+      if (saved) return saved;
+    } catch (e) {}
+    const d = getInitialLookbackDate("5m");
+    const minDate = new Date("2024-10-01");
+    if (d < minDate) return "2024-10-01";
+    return d.toISOString().split("T")[0];
+  });
+
+  const handleSetFromDate = (newDate) => {
+    let d = new Date(newDate);
+    if (isNaN(d.getTime())) {
+      d = new Date();
+    }
+    setFromDate(
+      d.toISOString().split("T")[0] < MIN_HISTORICAL_DATE
+        ? MIN_HISTORICAL_DATE
+        : d.toISOString().split("T")[0],
+    );
+  };
+  const [toDate, setToDate] = useState(() => {
+    const today = getTodayDateString();
+    try {
+      const saved = localStorage.getItem("chart_toDate");
+      if (saved) {
+        return saved < today ? today : saved;
+      }
+    } catch (e) {}
+    return today;
+  });
+  const [selectedIndicator, setSelectedIndicator] = useState(() => {
+    try {
+      const saved = localStorage.getItem("chart_selectedIndicator");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return [];
+  });
+  const [areIndicatorLegendsCollapsed, setAreIndicatorLegendsCollapsed] =
+    useState(false);
+  const [visibleMainIndicatorLegendCount, setVisibleMainIndicatorLegendCount] =
+    useState(null);
+  const [chartType, setChartType] = useState("candlestick");
+  const [chartCursorStyle, setChartCursorStyle] = useState("cross");
+  const [isMarketOpen, setIsMarketOpen] = useState(false);
+  const [liveOhlcv, setLiveOhlcv] = useState({});
+  const [liveIndicatorData, setLiveIndicatorData] = useState({});
+  const [isCodeEditorOpen, setIsCodeEditorOpen] = useState(false);
+  const [isPyodideReady, setIsPyodideReady] = useState(false);
+  const [mainChartLoading, setMainChartLoading] = useState(false);
+  const [symbolTransitioning, setSymbolTransitioning] = useState(false);
+  const symbolTransitioningRef = useRef(false);
+  const [noDataAvailable, setNoDataAvailable] = useState(false);
+  const [editorCode, setEditorCode] = useState(DEFAULT_EDITOR_CODE);
+  const [openScannerTrigger, setOpenScannerTrigger] = useState(0);
+  const [customSignals, setCustomSignals] = useState([]);
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [isSavingStrategy, setIsSavingStrategy] = useState(false);
+  const [isUpdatingStrategy, setIsUpdatingStrategy] = useState(false);
+  const [activeStrategyRecord, setActiveStrategyRecord] = useState(null);
+  const [isStrategyDirty, setIsStrategyDirty] = useState(false);
+  const [areStrategyVisualsVisible, setAreStrategyVisualsVisible] =
+    useState(true);
+  const areStrategyVisualsVisibleRef = useRef(areStrategyVisualsVisible);
+  const [scannerProgressData, setScannerProgressData] = useState(null);
+  const [dashboardSignals, setDashboardSignals] = useState([]);
+  const [deployedStrategyCode, setDeployedStrategyCode] = useState(null);
+  const [sandboxLegendGroups, setSandboxLegendGroups] = useState({});
+  const [draftStrategyName, setDraftStrategyName] = useState("");
+  const [apiBacktestRows, setApiBacktestRows] = useState([]);
+  const [backtestRows, setBacktestRows] = useState([]);
+  const [candleDataVersion, setCandleDataVersion] = useState(0);
+  const sandboxLegendGroupsRef = useRef({});
+  const previousTimeframeRef = useRef(timeframeValue);
+  const skipNextTimeframeAutoDeployRef = useRef(false);
+  const lastPaginationAutoDeployKeyRef = useRef(null);
+  const previousDateRangeRef = useRef({ fromDate, toDate });
+  const lastDateRangeAutoDeployKeyRef = useRef(null);
+  const hasConnectedOnceRef = useRef(false);
+
+  useEffect(() => {
+    areStrategyVisualsVisibleRef.current = areStrategyVisualsVisible;
+  }, [areStrategyVisualsVisible]);
+
+  const fetchPredictResults = () => {
+    setIsPredicting(true);
+    return apiService
+      .get("/api/predictResult")
+      .then((res) => {
+        const results = Array.isArray(res?.data)
+          ? res.data
+          : Array.isArray(res)
+            ? res
+            : [];
+        if (results.length > 0) {
+          console.log("[AI PREDICTION] REST results loaded:", results.length);
+
+          const mapped = results.map((item) => ({
+            symbol: item.symbol,
+            response: {
+              type: item.trade_type,
+              entry_time: item.entry_time,
+              entry_price: item.entry_price,
+              signal: item.signal,
+              trend: item.trend,
+              status: item.status,
+              rsi: item.rsi,
+              candle_open: item.candle_open,
+              candle_high: item.candle_high,
+              candle_low: item.candle_low,
+              candle_close: item.candle_close,
+              candle_volume: item.candle_volume,
+            },
+            tick: {
+              datetime: item.entry_time,
+            },
+            uuid: item.uuid,
+            created_at: item.created_at,
+          }));
+
+          setPredictResultData(deduplicateTrades(mapped));
+
+          // Also plot on chart
+          const signals = results.map((item) => {
+            let timeStr =
+              item.entry_time || item.created_at || new Date().toISOString();
+            timeStr = timeStr.replace(" ", "T");
+            return {
+              symbol: item.symbol,
+              signalType: item.trade_type,
+              timestamp: timeStr,
+              segment: "SCRIPT",
+            };
+          });
+
+          setDashboardSignals(signals);
+          setIsDeployed(true);
+          setDeployedStrategyCode("API_PREDICTION");
+        } else {
+          console.log("[AI PREDICTION] REST returned no results.");
+        }
+      })
+      .catch((err) => {
+        console.warn("[AI PREDICTION] REST fetch failed:", err);
+      })
+      .finally(() => {
+        setIsPredicting(false);
+      });
+  };
+
+  const handleStrategyClick = () => {
+    setIsWatchlistOpen(false);
+    setIsDetailsOpen(false);
+    setIsObjectTreeOpen(false);
+    setIsDepthOpen(true);
+    localStorage.setItem("leftDepthOpen", "true");
+    if (activeTab === "Alerts") setActiveTab("Chart");
+
+    const isCurrentlyRunning =
+      predictionStatus?.status === "running" ||
+      predictionStatus?.phase === "predicting";
+
+    if (!isCurrentlyRunning) {
+      setPredictResultData([]);
+      setPredictionStatus(null);
+      fetchPredictResults();
+    }
+  };
+
+  //code editor
+  useEffect(() => {
+    // Load Pyodide WebAssembly script dynamically
+    if (window.loadPyodide) {
+      if (!pyodideRef.current) {
+        window
+          .loadPyodide({
+            indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/",
+          })
+          .then(async (pyodide) => {
+            try {
+              await pyodide.loadPackage("pandas");
+            } catch (e) {
+              console.error(e);
+            }
+            pyodideRef.current = pyodide;
+            setIsPyodideReady(true);
+          });
+      }
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js";
+      script.onload = () => {
+        window
+          .loadPyodide({
+            indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/",
+          })
+          .then(async (pyodide) => {
+            try {
+              await pyodide.loadPackage("pandas");
+            } catch (e) {
+              console.error(e);
+            }
+            pyodideRef.current = pyodide;
+            setIsPyodideReady(true);
+          });
+      };
+      document.head.appendChild(script);
+    }
+    // Cleanup interval on unmount
+    return () => {
+      if (scannerIntervalRef.current) {
+        clearInterval(scannerIntervalRef.current);
+      }
+    };
+  }, []);
+
+  const handleClearCode = useCallback(() => {
+    const removedSeries = new Set();
+    if (customScriptSeriesRef.current && chartRef.current) {
+      if (Array.isArray(customScriptSeriesRef.current)) {
+        customScriptSeriesRef.current.forEach((entry) => {
+          const series = entry?.series || entry;
+          if (series) {
+            removedSeries.add(series);
+          }
+          try {
+            chartRef.current.removeSeries(series);
+          } catch (e) {}
+        });
+      } else {
+        removedSeries.add(customScriptSeriesRef.current);
+        try {
+          chartRef.current.removeSeries(customScriptSeriesRef.current);
+        } catch (e) {}
+      }
+      customScriptSeriesRef.current = null;
+    }
+    if (customScriptPriceLinesRef.current?.length) {
+      customScriptPriceLinesRef.current.forEach(({ series, priceLine }) => {
+        try {
+          series?.removePriceLine?.(priceLine);
+        } catch (e) {}
+      });
+      customScriptPriceLinesRef.current = [];
+    }
+    if (customScriptFillLayersRef.current?.length) {
+      customScriptFillLayersRef.current.forEach((layer) => {
+        try {
+          layer?.unsubscribe?.();
+        } catch (e) {}
+        try {
+          layer?.canvas?.remove?.();
+        } catch (e) {}
+      });
+      customScriptFillLayersRef.current = [];
+    }
+    if (customScriptMarkersRef.current) {
+      try {
+        customScriptMarkersRef.current.setMarkers([]);
+      } catch (e) {}
+    }
+    if (customScriptPaneKeysRef.current?.length && chartRef.current) {
+      const paneIndices = customScriptPaneKeysRef.current
+        .map((paneKey) => paneIndexRef.current[paneKey])
+        .filter((paneIndex) => Number.isFinite(paneIndex) && paneIndex > 0)
+        .sort((a, b) => b - a);
+
+      paneIndices.forEach((paneIndex) => {
+        const dummy = dummySeriesRef.current[paneIndex];
+        if (dummy) {
+          try {
+            chartRef.current.removeSeries(dummy);
+          } catch (e) {}
+          delete dummySeriesRef.current[paneIndex];
+        }
+
+        try {
+          if (typeof chartRef.current.removePane === "function") {
+            chartRef.current.removePane(paneIndex);
+          }
+        } catch (e) {}
+      });
+
+      customScriptPaneKeysRef.current.forEach((paneKey) => {
+        delete paneIndexRef.current[paneKey];
+        delete panesRef.current[paneKey];
+      });
+      customScriptPaneKeysRef.current = [];
+    }
+    if (removedSeries.size > 0 && allCreatedSeriesRef.current) {
+      allCreatedSeriesRef.current = allCreatedSeriesRef.current.filter(
+        (entry) => !removedSeries.has(entry?.series),
+      );
+    }
+
+    if (
+      customScriptBarColorsAppliedRef.current &&
+      seriesRef.current &&
+      Array.isArray(candlesRef.current) &&
+      candlesRef.current.length > 0
+    ) {
+      try {
+        const chartKind = seriesRef.current.customChartType || chartType;
+        if (chartKind === "heikinashi") {
+          seriesRef.current.setData(convertToHeikinAshi(candlesRef.current));
+        } else if (
+          chartKind === "candlestick" ||
+          chartKind === "hollowcandles"
+        ) {
+          seriesRef.current.setData(candlesRef.current);
+        }
+      } catch (e) {}
+    }
+    customScriptBarColorsAppliedRef.current = false;
+    customScriptBarColorMapRef.current = null;
+    lastDeployedMarkersRef.current = null;
+
+    if (scannerIntervalRef.current) {
+      clearInterval(scannerIntervalRef.current);
+      scannerIntervalRef.current = null;
+    }
+
+    setCustomSignals([]);
+    setDashboardSignals([]);
+    setDeployedStrategyCode(null);
+    setIsDeployed(false);
+    sandboxLegendGroupsRef.current = {};
+    setSandboxLegendGroups({});
+  }, [chartType]);
+
+  const handleSaveStrategy = useCallback(
+    async (code, options = {}) => {
+      if (!code || !code.trim()) {
+        Swal.fire({
+          icon: "warning",
+          title: "Empty Strategy",
+          text: "Please write some strategy code before saving.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        return;
+      }
+
+      try {
+        setIsSavingStrategy(true);
+        const symbolName =
+          selectedCurrency?.name || selectedCurrency?.symbol || "Strategy";
+        const existingStrategyName =
+          draftStrategyName?.trim() || activeStrategyRecord?.name?.trim() || "";
+        let strategyName =
+          existingStrategyName ||
+          `${symbolName} ${timeframeValue} Notebook Strategy`;
+
+        if (options?.requireStrategyName) {
+          const { value } = await Swal.fire({
+            title: "Strategy Name Required",
+            input: "text",
+            inputLabel: "Enter a name for this strategy",
+            inputPlaceholder: `${symbolName} ${timeframeValue} Strategy`,
+            inputValidator: (value) =>
+              value?.trim() ? undefined : "Strategy name is required.",
+            showCancelButton: true,
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+          });
+
+          if (!value?.trim()) {
+            return;
+          }
+
+          strategyName = value.trim();
+          setDraftStrategyName(strategyName);
+        }
+        const currentUser = getUser();
+        const resolvedUserId =
+          currentUser?.id || currentUser?._id || currentUser?.userId || "";
+        const resolvedUserName =
+          currentUser?.name ||
+          currentUser?.username ||
+          currentUser?.fullName ||
+          currentUser?.firstName ||
+          "";
+
+        if (!resolvedUserId) {
+          throw new Error("User id not found in session.");
+        }
+
+        const payload = {
+          userId: resolvedUserId,
+          strategyName: strategyName,
+          strategyType: "editor",
+          language: "python",
+          code,
+          // config: {
+          //   symbol: symbolName,
+          //   lookupSymbol: selectedCurrency?.symbol || null,
+          //   token: selectedCurrency?.token || null,
+          //   exchange:
+          //     selectedCurrency?.exchange || selectedCurrency?.segment || "NSE",
+          //   timeframe: timeframeValue,
+          //   fromDate,
+          //   toDate,
+          // },
+          isActive: false,
+          isDeployed: Boolean(isDeployed),
+        };
+
+        console.log(
+          "[Save user Strategy] Frontend payload:",
+          payload,
+        );
+
+        const response = await saveNotebookStrategy(payload);
+        const savedStrategy = response?.data || response;
+        if (savedStrategy?.id || savedStrategy?._id) {
+          setActiveStrategyRecord(savedStrategy);
+        }
+        setIsStrategyDirty(false);
+
+        toast.success(
+          response?.message || "Strategy payload logged successfully.",
+        );
+      } catch (err) {
+        Swal.fire({
+          icon: "error",
+          title: "Save Failed",
+          text:
+            err?.response?.data?.message ||
+            err?.response?.data?.error ||
+            err?.message ||
+            "Unable to save strategy.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+      } finally {
+        setIsSavingStrategy(false);
+      }
+    },
+    [
+      activeStrategyRecord?.name,
+      draftStrategyName,
+      fromDate,
+      isDeployed,
+      selectedCurrency,
+      timeframeValue,
+      toDate,
+    ],
+  );
+
+  const handleUpdateStrategy = useCallback(
+    async (code, options = {}) => {
+      const strategyId = activeStrategyRecord?.id || activeStrategyRecord?._id;
+      if (!strategyId) {
+        Swal.fire({
+          icon: "warning",
+          title: "No Saved Strategy",
+          text: "Please load a saved strategy first, then update it.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        return;
+      }
+
+      if (!code || !code.trim()) {
+        Swal.fire({
+          icon: "warning",
+          title: "Empty Strategy",
+          text: "Please write some strategy code before updating.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        return;
+      }
+
+      try {
+        setIsUpdatingStrategy(true);
+        const symbolName =
+          selectedCurrency?.name || selectedCurrency?.symbol || "Strategy";
+        const currentUser = getUser();
+        const resolvedUserId =
+          currentUser?.id || currentUser?._id || currentUser?.userId || "";
+
+        if (!resolvedUserId) {
+          throw new Error("User id not found in session.");
+        }
+
+        const strategyName =
+          options?.strategyName?.trim() ||
+          activeStrategyRecord?.name ||
+          activeStrategyRecord?.strategyName ||
+          `${symbolName} ${timeframeValue} Notebook Strategy`;
+
+        const payload = {
+          userId: resolvedUserId,
+          strategyName,
+          strategyType: "editor",
+          language: "python",
+          code,
+          isActive: false,
+          isDeployed: Boolean(isDeployed),
+        };
+
+        console.log(
+          "[Strategy.updateNotebookStrategy] Frontend payload:",
+          payload,
+        );
+
+        const response = await updateNotebookStrategy(
+          strategyId,
+          payload,
+        );
+        const updatedStrategy = response?.data || response;
+        if (updatedStrategy?.id || updatedStrategy?._id) {
+          setActiveStrategyRecord(updatedStrategy);
+        } else {
+          setActiveStrategyRecord((current) =>
+            current ? { ...current, strategyName } : current,
+          );
+        }
+        setDraftStrategyName(strategyName);
+        setIsStrategyDirty(false);
+
+        toast.success(response?.message || "Strategy updated successfully.");
+      } catch (err) {
+        Swal.fire({
+          icon: "error",
+          title: "Update Failed",
+          text:
+            err?.response?.data?.message ||
+            err?.response?.data?.error ||
+            err?.message ||
+            "Unable to update strategy.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+      } finally {
+        setIsUpdatingStrategy(false);
+      }
+    },
+    [
+      activeStrategyRecord,
+      fromDate,
+      isDeployed,
+      selectedCurrency,
+      timeframeValue,
+      toDate,
+    ],
+  );
+
+
+  const handleRenameStrategy = useCallback(
+    async (code) => {
+      const currentName =
+        activeStrategyRecord?.strategyName || activeStrategyRecord?.name || "";
+      const { value } = await Swal.fire({
+        title: "Rename Strategy",
+        input: "text",
+        inputLabel: "Enter the new strategy name",
+        inputValue: currentName,
+        showCancelButton: true,
+        inputValidator: (value) =>
+          value?.trim() ? undefined : "Strategy name is required.",
+        background: "var(--bg-secondary)",
+        color: "var(--text-primary)",
+      });
+
+      if (!value?.trim()) {
+        return;
+      }
+
+      await handleUpdateStrategy(code, { strategyName: value.trim() });
+    },
+    [
+      activeStrategyRecord?.name,
+      activeStrategyRecord?.strategyName,
+      handleUpdateStrategy,
+    ],
+  );
+
+  const renderSandboxPlots = useCallback(
+    (chartContract) => {
+      if (!chartRef.current) return;
+
+      const createdSeries = [];
+      const createdPriceLines = [];
+      const createdFillLayers = [];
+      const paneSeriesMap = new Map();
+      const sandboxPaneKeys = new Set();
+      const legendGroups = {};
+      const legendGroupsMeta = {};
+      const isStrategyVisualVisible = (baseVisible = true) =>
+        baseVisible !== false && areStrategyVisualsVisibleRef.current !== false;
+
+      const normalizeSandboxPane = (value) =>
+        String(value || chartContract?.pane || "overlay")
+          .trim()
+          .toLowerCase();
+
+      const getSandboxPaneKey = (value) => {
+        const paneName = normalizeSandboxPane(value);
+        if (["overlay", "main", "price", ""].includes(paneName)) {
+          return null;
+        }
+        return `__sandbox_pane__${paneName}`;
+      };
+
+      const toLineStyleValue = (value) => {
+        const normalized = String(value || "solid").toLowerCase();
+        if (normalized === "dotted") return 1;
+        if (normalized === "dashed") return 2;
+        return 0;
+      };
+
+      const getSeriesType = (plotType) => {
+        const seriesTypeMap = {
+          line: LineSeries,
+          histogram: HistogramSeries,
+          bar: HistogramSeries,
+          area: AreaSeries,
+          step: LineSeries,
+          scatter: LineSeries,
+          candle: CandlestickSeries,
+        };
+        return (
+          seriesTypeMap[String(plotType || "line").toLowerCase()] || LineSeries
+        );
+      };
+
+      const getIndexedStyleString = (value, index, fallback = null) => {
+        if (Array.isArray(value)) {
+          const direct = value[index];
+          if (typeof direct === "string" && direct.trim()) return direct;
+          const first = value.find(
+            (item) => typeof item === "string" && item.trim(),
+          );
+          return first || fallback;
+        }
+
+        if (typeof value === "string" && value.trim()) {
+          return value;
+        }
+
+        return fallback;
+      };
+
+      const getIndexedPlotColor = (plot, index, fallbackColor = null) => {
+        const lineColor = getIndexedStyleString(
+          plot?.style?.lineColor,
+          index,
+          null,
+        );
+        if (lineColor) return lineColor;
+
+        return getIndexedStyleString(plot?.style?.color, index, fallbackColor);
+      };
+
+      const getSeriesOptionColor = (value, fallback) =>
+        getIndexedStyleString(value, 0, fallback);
+
+      const getSeriesOptions = (plot) => {
+        const plotType = String(plot?.type || "line").toLowerCase();
+        const lineStyle = toLineStyleValue(plot?.style?.lineStyle);
+        const baseVisible = plot?.style?.visible !== false;
+        const visible = isStrategyVisualVisible(baseVisible);
+        const baseOptions = {
+          visible,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        };
+
+        if (plotType === "histogram") {
+          return {
+            ...baseOptions,
+            color: getIndexedPlotColor(plot, 0, "#2962ff"),
+            lineWidth: Number(plot?.style?.width) || 2,
+            base: Number.isFinite(Number(plot?.style?.base))
+              ? Number(plot.style.base)
+              : 0,
+          };
+        }
+
+        if (plotType === "area") {
+          const color = getSeriesOptionColor(plot?.style?.color, "#2962ff");
+          const lineColor = getSeriesOptionColor(plot?.style?.lineColor, color);
+          return {
+            ...baseOptions,
+            lineColor,
+            topColor:
+              getSeriesOptionColor(plot?.style?.topColor, null) ||
+              `${color}${color.length === 7 ? "33" : ""}`,
+            bottomColor:
+              getSeriesOptionColor(plot?.style?.bottomColor, null) ||
+              `${color}${color.length === 7 ? "05" : ""}`,
+            lineWidth: Number(plot?.style?.width) || 2,
+            lineStyle,
+            crosshairMarkerVisible:
+              plot?.style?.crosshairMarkerVisible !== false,
+          };
+        }
+
+        if (plotType === "bar") {
+          return {
+            ...baseOptions,
+            color: getIndexedPlotColor(plot, 0, "#2962ff"),
+            lineWidth: Number(plot?.style?.width) || 2,
+            base: Number.isFinite(Number(plot?.style?.base))
+              ? Number(plot.style.base)
+              : 0,
+          };
+        }
+
+        if (plotType === "candle") {
+          const upColor = getSeriesOptionColor(plot?.style?.upColor, "#22c55e");
+          const downColor = getSeriesOptionColor(
+            plot?.style?.downColor,
+            "#ef4444",
+          );
+          return {
+            ...baseOptions,
+            upColor,
+            downColor,
+            wickUpColor: getSeriesOptionColor(
+              plot?.style?.wickUpColor,
+              upColor,
+            ),
+            wickDownColor: getSeriesOptionColor(
+              plot?.style?.wickDownColor,
+              downColor,
+            ),
+            borderUpColor: getSeriesOptionColor(
+              plot?.style?.borderUpColor,
+              upColor,
+            ),
+            borderDownColor: getSeriesOptionColor(
+              plot?.style?.borderDownColor,
+              downColor,
+            ),
+            borderVisible: plot?.style?.borderVisible ?? true,
+          };
+        }
+
+        return {
+          ...baseOptions,
+          color: getIndexedPlotColor(plot, 0, "#2962ff"),
+          lineWidth: Number(plot?.style?.width) || 2,
+          lineStyle,
+          lineVisible: plotType !== "scatter",
+          pointMarkersVisible: plotType === "scatter",
+          crosshairMarkerVisible: plotType === "scatter",
+          lineType: plotType === "step" ? 1 : 0,
+        };
+      };
+
+      const getSeriesData = (plot) => {
+        if (!Array.isArray(plot?.data)) return [];
+
+        const plotType = String(plot?.type || "line").toLowerCase();
+        if (plotType === "candle") {
+          return plot.data
+            .map((point) => {
+              const time = toChartTimestamp(point?.time);
+              const open = Number(point?.open);
+              const high = Number(point?.high);
+              const low = Number(point?.low);
+              const close = Number(point?.close);
+
+              if (
+                time === null ||
+                !Number.isFinite(open) ||
+                !Number.isFinite(high) ||
+                !Number.isFinite(low) ||
+                !Number.isFinite(close)
+              ) {
+                return null;
+              }
+
+              return {
+                time,
+                open,
+                high,
+                low,
+                close,
+                ...(point?.color ? { color: point.color } : {}),
+                ...(point?.borderColor
+                  ? { borderColor: point.borderColor }
+                  : {}),
+                ...(point?.wickColor ? { wickColor: point.wickColor } : {}),
+              };
+            })
+            .filter(Boolean);
+        }
+
+        return plot.data
+          .map((point, index) => {
+            const normalized = toSeriesValue(point);
+            if (!normalized) return null;
+            if (!("value" in normalized)) return normalized;
+            const dynamicColor = getIndexedPlotColor(plot, index);
+            if (plotType === "area") {
+              const lineColor =
+                point?.lineColor ||
+                getIndexedStyleString(
+                  plot?.style?.lineColor,
+                  index,
+                  dynamicColor,
+                );
+              const topColor =
+                point?.topColor ||
+                getIndexedStyleString(plot?.style?.topColor, index, null);
+              const bottomColor =
+                point?.bottomColor ||
+                getIndexedStyleString(plot?.style?.bottomColor, index, null);
+
+              return {
+                ...normalized,
+                ...(lineColor ? { lineColor } : {}),
+                ...(topColor ? { topColor } : {}),
+                ...(bottomColor ? { bottomColor } : {}),
+              };
+            }
+
+            return {
+              ...normalized,
+              ...(point?.color || point?.lineColor
+                ? { color: point.color || point.lineColor }
+                : dynamicColor
+                  ? { color: dynamicColor }
+                  : {}),
+            };
+          })
+          .filter(Boolean);
+      };
+
+      const plots = Array.isArray(chartContract?.plots)
+        ? chartContract.plots
+        : [];
+      const plotEntriesById = new Map();
+
+      const getLastNumericValue = (seriesData, plotType) => {
+        if (!Array.isArray(seriesData) || seriesData.length === 0) return null;
+
+        for (let i = seriesData.length - 1; i >= 0; i -= 1) {
+          const point = seriesData[i];
+          if (!point || typeof point !== "object") continue;
+
+          if (plotType === "candle") {
+            if (Number.isFinite(Number(point.close))) {
+              return Number(point.close);
+            }
+            continue;
+          }
+
+          if (Number.isFinite(Number(point.value))) {
+            return Number(point.value);
+          }
+        }
+
+        return null;
+      };
+
+      plots.forEach((plot) => {
+        const paneKey = getSandboxPaneKey(plot?.pane);
+        if (paneKey) {
+          sandboxPaneKeys.add(paneKey);
+        }
+
+        const series = addSeries(
+          paneKey || "__sandbox_overlay__",
+          getSeriesType(plot?.type),
+          getSeriesOptions(plot),
+          paneKey,
+        );
+        const seriesData = getSeriesData(plot);
+
+        if (series && seriesData.length > 0) {
+          series.setData(seriesData);
+        }
+
+        if (!series) return;
+
+        createdSeries.push({
+          id:
+            plot?.id ||
+            plot?.title ||
+            `sandbox_plot_${createdSeries.length + 1}`,
+          paneKey,
+          series,
+          data: seriesData,
+          baseVisible: plot?.style?.visible !== false,
+        });
+
+        const plotEntry = {
+          id: plot?.id || plot?.title || `sandbox_plot_${createdSeries.length}`,
+          paneKey,
+          plotType: String(plot?.type || "line").toLowerCase(),
+          series,
+          data: seriesData,
+          baseVisible: plot?.style?.visible !== false,
+        };
+        if (plot?.id) {
+          plotEntriesById.set(plot.id, plotEntry);
+        }
+        if (plot?.title && !plotEntriesById.has(plot.title)) {
+          plotEntriesById.set(plot.title, plotEntry);
+        }
+
+        const paneSeriesKey = paneKey || SANDBOX_OVERLAY_KEY;
+        if (!paneSeriesMap.has(paneSeriesKey)) {
+          paneSeriesMap.set(paneSeriesKey, []);
+        }
+        paneSeriesMap.get(paneSeriesKey).push(series);
+
+        const legendKey = paneKey || SANDBOX_OVERLAY_KEY;
+        if (!legendGroups[legendKey]) {
+          legendGroups[legendKey] = {
+            paneKey,
+            title: chartContract?.name || "Sandbox Indicator",
+            items: [],
+          };
+          legendGroupsMeta[legendKey] = {
+            paneKey,
+            title: chartContract?.name || "Sandbox Indicator",
+            items: [],
+          };
+        }
+
+        const legendItem = {
+          id: plot?.id || plot?.title || `sandbox_plot_${createdSeries.length}`,
+          label: plot?.title || plot?.id || "Plot",
+          color:
+            seriesData[seriesData.length - 1]?.color ||
+            seriesData[seriesData.length - 1]?.lineColor ||
+            getIndexedPlotColor(
+              plot,
+              Math.max(seriesData.length - 1, 0),
+              getSeriesOptionColor(plot?.style?.topColor, null) ||
+                getSeriesOptionColor(plot?.style?.upColor, "#3b82f6"),
+            ),
+          value: getLastNumericValue(
+            seriesData,
+            String(plot?.type || "line").toLowerCase(),
+          ),
+        };
+
+        legendGroups[legendKey].items.push(legendItem);
+        legendGroupsMeta[legendKey].items.push({
+          ...legendItem,
+          series,
+          plotType: String(plot?.type || "line").toLowerCase(),
+        });
+      });
+
+      const drawings = Array.isArray(chartContract?.drawings)
+        ? chartContract.drawings
+        : [];
+      drawings.forEach((drawing) => {
+        const drawingType = String(drawing?.type || "line").toLowerCase();
+        if (
+          !["line", "line_segment", "segment", "polyline"].includes(drawingType)
+        ) {
+          return;
+        }
+
+        const points = Array.isArray(drawing?.points) ? drawing.points : [];
+        const seriesData = points
+          .map((point) => {
+            const time = toChartTimestamp(point?.time);
+            const value = Number(point?.value ?? point?.price);
+            if (time === null || !Number.isFinite(value)) return null;
+            return { time, value };
+          })
+          .filter(Boolean);
+
+        if (seriesData.length < 2) return;
+
+        const paneKey = getSandboxPaneKey(drawing?.pane);
+        if (paneKey) {
+          sandboxPaneKeys.add(paneKey);
+        }
+
+        const style = drawing?.style || {};
+        const baseVisible = style.visible !== false;
+        const visible = isStrategyVisualVisible(baseVisible);
+        const series = addSeries(
+          paneKey || "__sandbox_overlay__",
+          LineSeries,
+          {
+            visible,
+            color: getSeriesOptionColor(style.color, "#22c55e"),
+            lineWidth: Number(style.width) || 2,
+            lineStyle: toLineStyleValue(style.lineStyle),
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          },
+          paneKey,
+        );
+
+        if (!series) return;
+
+        try {
+          series.setData(seriesData);
+        } catch (error) {
+          console.warn("[Sandbox] Drawing setData failed:", error);
+          return;
+        }
+
+        const drawingId =
+          drawing?.id ||
+          drawing?.title ||
+          `sandbox_drawing_${createdSeries.length + 1}`;
+        createdSeries.push({
+          id: drawingId,
+          paneKey,
+          series,
+          data: seriesData,
+          baseVisible,
+          isDrawing: true,
+        });
+
+        const paneSeriesKey = paneKey || SANDBOX_OVERLAY_KEY;
+        if (!paneSeriesMap.has(paneSeriesKey)) {
+          paneSeriesMap.set(paneSeriesKey, []);
+        }
+        paneSeriesMap.get(paneSeriesKey).push(series);
+
+        if (style.showInLegend === true) {
+          const legendKey = paneKey || SANDBOX_OVERLAY_KEY;
+          if (!legendGroups[legendKey]) {
+            legendGroups[legendKey] = {
+              paneKey,
+              title: chartContract?.name || "Sandbox Indicator",
+              items: [],
+            };
+            legendGroupsMeta[legendKey] = {
+              paneKey,
+              title: chartContract?.name || "Sandbox Indicator",
+              items: [],
+            };
+          }
+
+          const legendItem = {
+            id: drawingId,
+            label: drawing?.title || drawingId,
+            color: getSeriesOptionColor(style.color, "#22c55e"),
+            value: getLastNumericValue(seriesData, "line"),
+          };
+          legendGroups[legendKey].items.push(legendItem);
+          legendGroupsMeta[legendKey].items.push({
+            ...legendItem,
+            series,
+            plotType: "line",
+          });
+        }
+      });
+
+      const getPaneElement = (paneKey) =>
+        paneKey
+          ? panesRef.current?.[paneKey]?.div ||
+            panesRef.current?.[paneKey]?.pane?.getHTMLElement?.()
+          : containerRef.current;
+
+      const getPrimarySeriesForPane = (paneKey) =>
+        paneSeriesMap.get(paneKey || SANDBOX_OVERLAY_KEY)?.[0] ||
+        (paneKey ? null : seriesRef.current);
+
+      const addCanvasLayer = (
+        paneKey,
+        drawLayer,
+        zIndex = 2,
+        baseVisible = true,
+      ) => {
+        const paneElement = getPaneElement(paneKey);
+        const hostElement = containerRef.current;
+        if (!paneElement || !hostElement || typeof drawLayer !== "function") {
+          return;
+        }
+
+        if (getComputedStyle(hostElement).position === "static") {
+          hostElement.style.position = "relative";
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.style.position = "absolute";
+        canvas.style.left = "0";
+        canvas.style.top = "0";
+        canvas.style.pointerEvents = "none";
+        canvas.style.zIndex = String(zIndex);
+        canvas.style.display = isStrategyVisualVisible(baseVisible)
+          ? "block"
+          : "none";
+        hostElement.appendChild(canvas);
+
+        const draw = () => {
+          const hostRect = hostElement.getBoundingClientRect();
+          const paneRect = paneElement.getBoundingClientRect();
+          const left = paneRect.left - hostRect.left;
+          const top = paneRect.top - hostRect.top;
+          const width = paneRect.width;
+          const height = paneRect.height;
+          if (!width || !height) return;
+
+          const dpr = window.devicePixelRatio || 1;
+          canvas.width = Math.floor(width * dpr);
+          canvas.height = Math.floor(height * dpr);
+          canvas.style.width = `${width}px`;
+          canvas.style.height = `${height}px`;
+          canvas.style.left = `${left}px`;
+          canvas.style.top = `${top}px`;
+
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(dpr, dpr);
+
+          drawLayer({ ctx, width, height, paneKey });
+        };
+
+        const redraw = () => draw();
+        chartRef.current.timeScale().subscribeVisibleTimeRangeChange(redraw);
+        chartRef.current.subscribeCrosshairMove(redraw);
+
+        let resizeObserver = null;
+        if (typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => draw());
+          resizeObserver.observe(hostElement);
+          if (paneElement !== hostElement) {
+            resizeObserver.observe(paneElement);
+          }
+        }
+
+        requestAnimationFrame(draw);
+        setTimeout(draw, 0);
+
+        createdFillLayers.push({
+          canvas,
+          baseVisible,
+          unsubscribe: () => {
+            chartRef.current
+              ?.timeScale()
+              ?.unsubscribeVisibleTimeRangeChange?.(redraw);
+            chartRef.current?.unsubscribeCrosshairMove?.(redraw);
+            resizeObserver?.disconnect?.();
+          },
+        });
+      };
+
+      const groupByPane = (items) => {
+        const grouped = new Map();
+        items.forEach((item) => {
+          const paneKey = getSandboxPaneKey(item?.pane);
+          const key = paneKey || SANDBOX_OVERLAY_KEY;
+          if (!grouped.has(key)) {
+            grouped.set(key, { paneKey, items: [] });
+          }
+          grouped.get(key).items.push(item);
+        });
+        return grouped;
+      };
+
+      const getNumberValue = (...values) => {
+        for (const value of values) {
+          const numeric = Number(value);
+          if (Number.isFinite(numeric)) return numeric;
+        }
+        return null;
+      };
+
+      const bgColors = Array.isArray(chartContract?.bgColors)
+        ? chartContract.bgColors
+        : [];
+      groupByPane(bgColors).forEach(({ paneKey, items }) => {
+        addCanvasLayer(
+          paneKey,
+          ({ ctx, width, height }) => {
+            const halfInterval = Math.max(
+              1,
+              Math.floor((TIMEFRAME_TO_SECONDS[timeframeValue] || 300) / 2),
+            );
+            items.forEach((item) => {
+              const time = toChartTimestamp(item?.time);
+              const color = getIndexedStyleString(item?.color, 0, null);
+              if (time === null || !color) return;
+
+              const x = chartRef.current.timeScale().timeToCoordinate(time);
+              let left = chartRef.current
+                .timeScale()
+                .timeToCoordinate(time - halfInterval);
+              let right = chartRef.current
+                .timeScale()
+                .timeToCoordinate(time + halfInterval);
+
+              if (x == null) return;
+              if (left == null || right == null || left === right) {
+                left = x - 3;
+                right = x + 3;
+              }
+
+              const bandLeft = Math.max(0, Math.min(left, right));
+              const bandWidth = Math.min(
+                width - bandLeft,
+                Math.abs(right - left),
+              );
+              if (bandWidth <= 0) return;
+              ctx.fillStyle = color;
+              ctx.fillRect(bandLeft, 0, bandWidth, height);
+            });
+          },
+          1,
+        );
+      });
+
+      const fills = Array.isArray(chartContract?.fills)
+        ? chartContract.fills
+        : [];
+      fills.forEach((fillConfig) => {
+        const fromEntry = plotEntriesById.get(fillConfig?.from);
+        if (
+          !fromEntry?.series ||
+          !Array.isArray(fromEntry?.data) ||
+          fromEntry.data.length === 0
+        ) {
+          return;
+        }
+
+        const toEntry =
+          typeof fillConfig?.to === "string"
+            ? plotEntriesById.get(fillConfig.to)
+            : null;
+        const paneKey = fromEntry.paneKey || toEntry?.paneKey || null;
+
+        if (
+          toEntry?.paneKey !== undefined &&
+          fromEntry.paneKey !== toEntry?.paneKey
+        ) {
+          return;
+        }
+
+        const baseVisible =
+          fillConfig?.visible !== false &&
+          fromEntry?.baseVisible !== false &&
+          toEntry?.baseVisible !== false;
+        const paneElement = paneKey
+          ? panesRef.current?.[paneKey]?.div ||
+            panesRef.current?.[paneKey]?.pane?.getHTMLElement?.()
+          : containerRef.current;
+        const hostElement = containerRef.current;
+
+        if (!paneElement || !hostElement) {
+          return;
+        }
+
+        if (getComputedStyle(hostElement).position === "static") {
+          hostElement.style.position = "relative";
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.style.position = "absolute";
+        canvas.style.left = "0";
+        canvas.style.top = "0";
+        canvas.style.pointerEvents = "none";
+        canvas.style.zIndex = "2";
+        canvas.style.display = isStrategyVisualVisible(baseVisible)
+          ? "block"
+          : "none";
+        hostElement.appendChild(canvas);
+
+        const drawFill = () => {
+          const hostRect = hostElement.getBoundingClientRect();
+          const paneRect = paneElement.getBoundingClientRect();
+          const left = paneRect.left - hostRect.left;
+          const top = paneRect.top - hostRect.top;
+          const width = paneRect.width;
+          const height = paneRect.height;
+          if (!width || !height) return;
+
+          const dpr = window.devicePixelRatio || 1;
+          canvas.width = Math.floor(width * dpr);
+          canvas.height = Math.floor(height * dpr);
+          canvas.style.width = `${width}px`;
+          canvas.style.height = `${height}px`;
+          canvas.style.left = `${left}px`;
+          canvas.style.top = `${top}px`;
+
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(dpr, dpr);
+
+          const topData = fromEntry.data || [];
+          const bottomData = Array.isArray(toEntry?.data) ? toEntry.data : [];
+          if (!topData.length) return;
+
+          const topPoints = topData
+            .map((point) => {
+              if (!Number.isFinite(Number(point?.value))) return null;
+              const x = chartRef.current
+                .timeScale()
+                .timeToCoordinate(point.time);
+              const y = fromEntry.series.priceToCoordinate(point.value);
+              if (x == null || y == null) return null;
+              return { x, y };
+            })
+            .filter(Boolean);
+
+          if (topPoints.length < 2) {
+            return;
+          }
+
+          const bottomPoints = toEntry?.series
+            ? bottomData
+                .map((point) => {
+                  if (!Number.isFinite(Number(point?.value))) return null;
+                  const x = chartRef.current
+                    .timeScale()
+                    .timeToCoordinate(point.time);
+                  const y = toEntry.series.priceToCoordinate(point.value);
+                  if (x == null || y == null) return null;
+                  return { x, y };
+                })
+                .filter(Boolean)
+            : [];
+
+          ctx.save();
+          ctx.rect(0, 0, width, height);
+          ctx.clip();
+          ctx.beginPath();
+
+          ctx.moveTo(topPoints[0].x, topPoints[0].y);
+          topPoints.slice(1).forEach((point) => {
+            ctx.lineTo(point.x, point.y);
+          });
+
+          if (toEntry?.series && bottomPoints.length > 0) {
+            for (let i = bottomPoints.length - 1; i >= 0; i -= 1) {
+              const point = bottomPoints[i];
+              ctx.lineTo(point.x, point.y);
+            }
+          } else if (Number.isFinite(Number(fillConfig?.toValue))) {
+            const toValue = Number(fillConfig.toValue);
+            for (let i = topPoints.length - 1; i >= 0; i -= 1) {
+              const point = topPoints[i];
+              const y = fromEntry.series.priceToCoordinate(toValue);
+              if (y == null) continue;
+              ctx.lineTo(point.x, y);
+            }
+          } else {
+            ctx.restore();
+            return;
+          }
+
+          ctx.closePath();
+
+          if (fillConfig?.colorTop || fillConfig?.colorBottom) {
+            const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            gradient.addColorStop(
+              0,
+              fillConfig.colorTop || fillConfig.color || "rgba(34,197,94,0.18)",
+            );
+            gradient.addColorStop(
+              1,
+              fillConfig.colorBottom ||
+                fillConfig.colorTop ||
+                fillConfig.color ||
+                "rgba(245,158,11,0.10)",
+            );
+            ctx.fillStyle = gradient;
+          } else {
+            ctx.fillStyle = fillConfig?.color || "rgba(34,197,94,0.18)";
+          }
+
+          ctx.fill();
+          ctx.restore();
+        };
+
+        const redraw = () => drawFill();
+        chartRef.current.timeScale().subscribeVisibleTimeRangeChange(redraw);
+        chartRef.current.subscribeCrosshairMove(redraw);
+
+        let resizeObserver = null;
+        if (typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => drawFill());
+          resizeObserver.observe(hostElement);
+          if (paneElement !== hostElement) {
+            resizeObserver.observe(paneElement);
+          }
+        }
+
+        requestAnimationFrame(drawFill);
+        setTimeout(drawFill, 0);
+
+        createdFillLayers.push({
+          canvas,
+          baseVisible,
+          unsubscribe: () => {
+            chartRef.current
+              ?.timeScale()
+              ?.unsubscribeVisibleTimeRangeChange?.(redraw);
+            chartRef.current?.unsubscribeCrosshairMove?.(redraw);
+            resizeObserver?.disconnect?.();
+          },
+        });
+      });
+
+      const zones = Array.isArray(chartContract?.zones)
+        ? chartContract.zones
+        : [];
+      groupByPane(zones).forEach(({ paneKey, items }) => {
+        const series = getPrimarySeriesForPane(paneKey);
+        if (!series) return;
+
+        addCanvasLayer(
+          paneKey,
+          ({ ctx, width }) => {
+            items.forEach((zoneItem) => {
+              const color =
+                getIndexedStyleString(
+                  zoneItem?.color || zoneItem?.fillColor,
+                  0,
+                  "rgba(59,130,246,0.12)",
+                ) || "rgba(59,130,246,0.12)";
+
+              if (
+                Array.isArray(zoneItem?.upper) &&
+                Array.isArray(zoneItem?.lower)
+              ) {
+                const upperPoints = zoneItem.upper
+                  .map((point) => {
+                    const time = toChartTimestamp(point?.time);
+                    const value = getNumberValue(point?.value);
+                    if (time === null || value === null) return null;
+                    const x = chartRef.current
+                      .timeScale()
+                      .timeToCoordinate(time);
+                    const y = series.priceToCoordinate(value);
+                    if (x == null || y == null) return null;
+                    return { x, y };
+                  })
+                  .filter(Boolean);
+                const lowerPoints = zoneItem.lower
+                  .map((point) => {
+                    const time = toChartTimestamp(point?.time);
+                    const value = getNumberValue(point?.value);
+                    if (time === null || value === null) return null;
+                    const x = chartRef.current
+                      .timeScale()
+                      .timeToCoordinate(time);
+                    const y = series.priceToCoordinate(value);
+                    if (x == null || y == null) return null;
+                    return { x, y };
+                  })
+                  .filter(Boolean);
+
+                if (upperPoints.length < 2 || lowerPoints.length < 2) return;
+
+                ctx.beginPath();
+                ctx.moveTo(upperPoints[0].x, upperPoints[0].y);
+                upperPoints
+                  .slice(1)
+                  .forEach((point) => ctx.lineTo(point.x, point.y));
+                for (let i = lowerPoints.length - 1; i >= 0; i -= 1) {
+                  ctx.lineTo(lowerPoints[i].x, lowerPoints[i].y);
+                }
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+                return;
+              }
+
+              const fromValue = getNumberValue(
+                zoneItem?.from,
+                zoneItem?.fromValue,
+                zoneItem?.bottom,
+              );
+              const toValue = getNumberValue(
+                zoneItem?.to,
+                zoneItem?.toValue,
+                zoneItem?.top,
+              );
+              if (fromValue === null || toValue === null) return;
+
+              const y1 = series.priceToCoordinate(fromValue);
+              const y2 = series.priceToCoordinate(toValue);
+              if (y1 == null || y2 == null) return;
+
+              const top = Math.min(y1, y2);
+              const height = Math.abs(y2 - y1);
+              ctx.fillStyle = color;
+              ctx.fillRect(0, top, width, Math.max(1, height));
+            });
+          },
+          2,
+        );
+      });
+
+      const boxes = Array.isArray(chartContract?.boxes)
+        ? chartContract.boxes
+        : [];
+      groupByPane(boxes).forEach(({ paneKey, items }) => {
+        const series = getPrimarySeriesForPane(paneKey);
+        if (!series) return;
+
+        addCanvasLayer(
+          paneKey,
+          ({ ctx }) => {
+            items.forEach((boxItem) => {
+              const start = toChartTimestamp(boxItem?.start ?? boxItem?.from);
+              const end = toChartTimestamp(boxItem?.end ?? boxItem?.to);
+              const topValue = getNumberValue(boxItem?.top, boxItem?.high);
+              const bottomValue = getNumberValue(boxItem?.bottom, boxItem?.low);
+              if (
+                start === null ||
+                end === null ||
+                topValue === null ||
+                bottomValue === null
+              ) {
+                return;
+              }
+
+              const x1 = chartRef.current.timeScale().timeToCoordinate(start);
+              const x2 = chartRef.current.timeScale().timeToCoordinate(end);
+              const y1 = series.priceToCoordinate(topValue);
+              const y2 = series.priceToCoordinate(bottomValue);
+              if (x1 == null || x2 == null || y1 == null || y2 == null) return;
+
+              const left = Math.min(x1, x2);
+              const top = Math.min(y1, y2);
+              const width = Math.abs(x2 - x1);
+              const height = Math.abs(y2 - y1);
+              const fillColor = getIndexedStyleString(
+                boxItem?.fillColor || boxItem?.color,
+                0,
+                "rgba(59,130,246,0.10)",
+              );
+              const borderColor = getIndexedStyleString(
+                boxItem?.borderColor || boxItem?.color,
+                0,
+                "rgba(59,130,246,0.65)",
+              );
+
+              ctx.fillStyle = fillColor;
+              ctx.fillRect(left, top, Math.max(1, width), Math.max(1, height));
+              ctx.strokeStyle = borderColor;
+              ctx.lineWidth = Number(boxItem?.lineWidth) || 1;
+              ctx.strokeRect(
+                left,
+                top,
+                Math.max(1, width),
+                Math.max(1, height),
+              );
+            });
+          },
+          3,
+        );
+      });
+
+      const labels = Array.isArray(chartContract?.labels)
+        ? chartContract.labels
+        : [];
+      groupByPane(labels).forEach(({ paneKey, items }) => {
+        const series = getPrimarySeriesForPane(paneKey);
+        if (!series) return;
+
+        addCanvasLayer(
+          paneKey,
+          ({ ctx, width, height }) => {
+            ctx.font = "12px sans-serif";
+            ctx.textBaseline = "middle";
+            items.forEach((labelItem) => {
+              const time = toChartTimestamp(labelItem?.time);
+              const value = getNumberValue(
+                labelItem?.value,
+                labelItem?.price,
+                labelItem?.y,
+              );
+              const text = String(
+                labelItem?.text || labelItem?.label || "",
+              ).trim();
+              if (time === null || value === null || !text) return;
+
+              const x = chartRef.current.timeScale().timeToCoordinate(time);
+              const y = series.priceToCoordinate(value);
+              if (x == null || y == null) return;
+
+              const color = getIndexedStyleString(
+                labelItem?.color || labelItem?.textColor,
+                0,
+                "#e5e7eb",
+              );
+              const backgroundColor = getIndexedStyleString(
+                labelItem?.backgroundColor || labelItem?.bgColor,
+                0,
+                "rgba(15,23,42,0.78)",
+              );
+              const offset =
+                String(labelItem?.position || "").toLowerCase() === "abovebar"
+                  ? -14
+                  : String(labelItem?.position || "").toLowerCase() ===
+                      "belowbar"
+                    ? 14
+                    : 0;
+              const textWidth = ctx.measureText(text).width;
+              const boxWidth = textWidth + 8;
+              const boxHeight = 18;
+              const left = Math.max(
+                0,
+                Math.min(width - boxWidth, x - boxWidth / 2),
+              );
+              const top = Math.max(
+                0,
+                Math.min(height - boxHeight, y + offset - boxHeight / 2),
+              );
+
+              ctx.fillStyle = backgroundColor;
+              ctx.fillRect(left, top, boxWidth, boxHeight);
+              ctx.fillStyle = color;
+              ctx.fillText(text, left + 4, top + boxHeight / 2);
+            });
+          },
+          4,
+        );
+      });
+
+      const barColors = Array.isArray(chartContract?.barColors)
+        ? chartContract.barColors
+        : [];
+      if (
+        barColors.length > 0 &&
+        seriesRef.current &&
+        Array.isArray(candlesRef.current) &&
+        candlesRef.current.length > 0
+      ) {
+        const colorByTime = new Map();
+        barColors.forEach((item) => {
+          const time = normalizeChartTime(item?.time);
+          if (time === null || !item?.color) return;
+          colorByTime.set(time, item.color);
+          colorByTime.set(time + CHART_TIME_OFFSET_SECONDS, item.color);
+        });
+        customScriptBarColorMapRef.current = colorByTime;
+
+        try {
+          const chartKind = seriesRef.current.customChartType || chartType;
+          if (chartKind === "candlestick" || chartKind === "hollowcandles") {
+            seriesRef.current.setData(
+              applySandboxBarColorsToData(candlesRef.current, chartKind),
+            );
+            customScriptBarColorsAppliedRef.current = true;
+          } else if (chartKind === "heikinashi") {
+            seriesRef.current.setData(
+              applySandboxBarColorsToData(candlesRef.current, chartKind),
+            );
+            customScriptBarColorsAppliedRef.current = true;
+          }
+        } catch (error) {
+          console.warn("Unable to apply sandbox bar colors:", error);
+        }
+      } else {
+        customScriptBarColorsAppliedRef.current = false;
+        customScriptBarColorMapRef.current = null;
+      }
+
+      const levelPaneKey =
+        getSandboxPaneKey(chartContract?.pane) || "__sandbox_overlay__";
+      const levelSeries =
+        paneSeriesMap.get(levelPaneKey)?.[0] ||
+        paneSeriesMap.values().next().value?.[0];
+
+      if (levelSeries?.createPriceLine) {
+        const levels = Array.isArray(chartContract?.levels)
+          ? chartContract.levels
+          : [];
+        levels.forEach((level) => {
+          const price = Number(level?.value);
+          if (!Number.isFinite(price)) return;
+
+          const baseVisible = level?.visible !== false;
+          const baseAxisLabelVisible = level?.axisLabelVisible ?? true;
+          try {
+            const priceLine = levelSeries.createPriceLine({
+              price,
+              color: level?.color || "#94a3b8",
+              lineWidth: Number(level?.lineWidth) || 1,
+              lineStyle: toLineStyleValue(level?.lineStyle || "dashed"),
+              title: level?.label || "",
+              axisLabelVisible:
+                baseAxisLabelVisible && isStrategyVisualVisible(baseVisible),
+              lineVisible: isStrategyVisualVisible(baseVisible),
+            });
+            createdPriceLines.push({
+              series: levelSeries,
+              priceLine,
+              baseVisible,
+              baseAxisLabelVisible,
+            });
+          } catch (error) {
+            console.warn("Unable to create sandbox price line:", error);
+          }
+        });
+      }
+
+      customScriptSeriesRef.current = createdSeries;
+      customScriptPriceLinesRef.current = createdPriceLines;
+      customScriptFillLayersRef.current = createdFillLayers;
+      customScriptPaneKeysRef.current = Array.from(sandboxPaneKeys);
+      sandboxLegendGroupsRef.current = legendGroupsMeta;
+      setSandboxLegendGroups(legendGroups);
+    },
+    [applySandboxBarColorsToData, chartType, timeframeValue],
+  );
+
+  const applyStrategyVisualVisibility = useCallback((visible) => {
+    const seriesList = Array.isArray(customScriptSeriesRef.current)
+      ? customScriptSeriesRef.current
+      : [];
+
+    seriesList.forEach((entry) => {
+      const series = entry?.series || entry;
+      const nextVisible = visible && entry?.baseVisible !== false;
+      try {
+        series.applyOptions({ visible: nextVisible });
+      } catch (error) {
+        console.warn("Unable to toggle strategy series visibility:", error);
+      }
+    });
+
+    if (customScriptMarkersRef.current) {
+      try {
+        customScriptMarkersRef.current.setMarkers(
+          visible ? lastDeployedMarkersRef.current || [] : [],
+        );
+      } catch (error) {
+        console.warn("Unable to toggle strategy markers visibility:", error);
+      }
+    }
+  }, []);
+
+  const handleToggleStrategyVisuals = useCallback(() => {
+    setAreStrategyVisualsVisible((prev) => {
+      const next = !prev;
+      areStrategyVisualsVisibleRef.current = next;
+      applyStrategyVisualVisibility(next);
+      return next;
+    });
+  }, [applyStrategyVisualVisibility]);
+
+  const handleStartNewStrategy = useCallback(() => {
+    setActiveStrategyRecord(null);
+    setDraftStrategyName("");
+    setIsStrategyDirty(false);
+    setIsDeployed(false);
+  }, []);
+
+  const handleOpenStrategyEditor = useCallback(() => {
+    setIsCodeEditorOpen(true);
+  }, []);
+
+  // 1. Initial Dashboard Fetch (Replaces Polling)
+  useEffect(() => {
+    if (
+      !isDeployed ||
+      !deployedStrategyCode ||
+      deployedStrategyCode === "API_PREDICTION" ||
+      deployedStrategyCode === SANDBOX_DEPLOYMENT_CODE
+    ) {
+      return;
+    }
+
+    const fetchDashboard = async () => {
+      try {
+        const resp = await apiService.get(`/api/strategy/scanner-dashboard`);
+        const data = Array.isArray(resp)
+          ? resp
+          : resp?.data?.data || resp?.data || [];
+        setDashboardSignals(data);
+      } catch (err) {
+        console.error("Failed to fetch dashboard signals:", err);
+      }
+    };
+
+    // Fetch immediately on deploy to show existing dashboard results
+    fetchDashboard();
+  }, [isDeployed, deployedStrategyCode]);
+
+  // Dedicated Strategy Socket Handlers
+  const signalBufferRef = useRef([]);
+  const deploymentSignalsRef = useRef([]);
+
+  // Flush buffer to state every 500ms to avoid freezing the UI on mass updates
+  useEffect(() => {
+    const flushInterval = setInterval(() => {
+      if (signalBufferRef.current?.length > 0) {
+        const newSignals = [...signalBufferRef.current];
+        signalBufferRef.current = []; // Clear immediately
+
+        setDashboardSignals((prev) => [...prev, ...newSignals]);
+      }
+    }, 500);
+
+    return () => clearInterval(flushInterval);
+  }, []);
+
+  useEffect(() => {
+    const strategySocket = getStrategySocket();
+
+    const handleScannerProgress = (data) => {
+      try {
+        console.log(
+          `[STRATEGY SOCKET] ${EVENTS.STRATEGY.PROGRESS} Payload:`,
+          data,
+        );
+        setScannerProgressData(data);
+        let percentage =
+          data.total > 0 ? ((data.processed / data.total) * 100).toFixed(1) : 0;
+        toast.update("compiling", {
+          render: `Scanning... ${percentage}% completed. Current: ${data.current_stock || "..."}`,
+          type: "info",
+          isLoading: true,
+        });
+      } catch (err) {
+        console.error(`[STRATEGY SOCKET ERROR] PROGRESS handler failed:`, err);
+      }
+    };
+
+    const handleScannerComplete = (response) => {
+      try {
+        console.log(
+          `[STRATEGY SOCKET] ${EVENTS.STRATEGY.COMPLETE} Payload:`,
+          response,
+        );
+        toast.dismiss("compiling");
+        toast.success(
+          response?.message ||
+            "Scanner triggered successfully! Waiting for results...",
+        );
+        setIsDeploying(false);
+        console.log(
+          "Scanner Execution Complete. All Signals:",
+          deploymentSignalsRef.current,
+        );
+      } catch (err) {
+        console.error(`[STRATEGY SOCKET ERROR] COMPLETE handler failed:`, err);
+      }
+    };
+
+    const handleNewScannerSignal = (signalData) => {
+      try {
+        console.log(
+          `[STRATEGY SOCKET] ${EVENTS.STRATEGY.NEW_SIGNAL} Payload:`,
+          signalData,
+        );
+        signalBufferRef.current.push(signalData);
+        deploymentSignalsRef.current.push(signalData);
+      } catch (err) {
+        console.error(
+          `[STRATEGY SOCKET ERROR] NEW_SIGNAL handler failed:`,
+          err,
+        );
+      }
+    };
+
+    const handleScannerError = (errPayload) => {
+      try {
+        console.error(
+          `[STRATEGY SOCKET] ${EVENTS.STRATEGY.ERROR} Payload:`,
+          errPayload,
+        );
+        toast.warn(
+          `Error on ${errPayload?.symbol || "Unknown"}: ${errPayload?.error || "Scanning failed"}`,
+          {
+            autoClose: 3000,
+            position: "top-right",
+          },
+        );
+        setIsDeploying(false);
+        toast.dismiss("compiling");
+      } catch (err) {
+        console.error(`[STRATEGY SOCKET ERROR] ERROR handler failed:`, err);
+      }
+    };
+
+    const handleAiPredictionStatus = (data) => {
+      console.log(
+        `[STRATEGY SOCKET] ${EVENTS.STRATEGY.AI_PREDICTION_STATUS}:`,
+        data,
+      );
+
+      // Force a new object reference to guarantee a React state update
+      const newData =
+        typeof data === "object" && data !== null ? { ...data } : data;
+      setPredictionStatus(newData);
+
+      if (newData.status === "running") {
+        setIsPredicting(true);
+      } else if (newData.status === "done" || newData.status === "complete") {
+        setIsPredicting(false);
+
+        // o. FALLBACK: If no trade signals arrived via socket, fetch from REST API
+        // Wait briefly to allow any in-flight socket events to arrive first
+        setTimeout(async () => {
+          setPredictResultData((currentResults) => {
+            if (currentResults && currentResults.length > 0) {
+              // Socket results already arrived ?" no fallback needed
+              return currentResults;
+            }
+
+            // No socket results ?" fetch from REST API as fallback
+            apiService
+              .get("/api/predictResult")
+              .then((res) => {
+                const results = Array.isArray(res?.data)
+                  ? res.data
+                  : Array.isArray(res)
+                    ? res
+                    : [];
+                if (results.length > 0) {
+                  console.log(
+                    "[AI PREDICTION] Fallback REST results loaded:",
+                    results.length,
+                  );
+
+                  const mapped = results.map((item) => ({
+                    symbol: item.symbol,
+                    response: {
+                      type: item.trade_type,
+                      entry_time: item.entry_time,
+                      entry_price: item.entry_price,
+                      signal: item.signal,
+                      trend: item.trend,
+                      status: item.status,
+                      rsi: item.rsi,
+                      candle_open: item.candle_open,
+                      candle_high: item.candle_high,
+                      candle_low: item.candle_low,
+                      candle_close: item.candle_close,
+                      candle_volume: item.candle_volume,
+                    },
+                    tick: {
+                      datetime: item.entry_time,
+                    },
+                    uuid: item.uuid,
+                    created_at: item.created_at,
+                  }));
+
+                  setPredictResultData(deduplicateTrades(mapped));
+
+                  // Also plot on chart
+                  const signals = results.map((item) => {
+                    let timeStr =
+                      item.entry_time ||
+                      item.created_at ||
+                      new Date().toISOString();
+                    timeStr = timeStr.replace(" ", "T");
+                    return {
+                      symbol: item.symbol,
+                      signalType: item.trade_type,
+                      timestamp: timeStr,
+                      segment: "SCRIPT",
+                    };
+                  });
+
+                  setDashboardSignals((prev) => [...prev, ...signals]);
+                  setIsDeployed(true);
+                  setDeployedStrategyCode("API_PREDICTION");
+                } else {
+                  console.log(
+                    "[AI PREDICTION] REST fallback returned no results.",
+                  );
+                }
+              })
+              .catch((err) => {
+                console.warn("[AI PREDICTION] REST fallback failed:", err);
+              });
+
+            return currentResults; // Keep current state unchanged during async fetch
+          });
+        }, 1500); // 1.5s grace window for socket events
+      }
+    };
+
+    const handleAiTradeSignal = (tradeData) => {
+      console.log(
+        `[STRATEGY SOCKET] ${EVENTS.STRATEGY.AI_TRADE_SIGNAL}:`,
+        tradeData,
+      );
+      // Ensure Results pane is open
+
+      const mappedSignal = {
+        symbol: tradeData.symbol,
+        response: {
+          type: tradeData.trade_type,
+          entry_time: tradeData.entry_time,
+          entry_price: tradeData.entry_price,
+          signal: tradeData.signal,
+        },
+        tick: {
+          datetime: tradeData.entry_time,
+        },
+      };
+
+      setPredictResultData((prev) =>
+        deduplicateTrades([mappedSignal, ...prev]),
+      );
+
+      // Add to dashboardSignals so it plots on the chart
+      let timeStr =
+        tradeData.entry_time || tradeData.timestamp || new Date().toISOString();
+      timeStr = timeStr.replace(" ", "T");
+      setDashboardSignals((prev) => [
+        ...prev,
+        {
+          symbol: tradeData.symbol,
+          signalType: tradeData.trade_type,
+          timestamp: timeStr,
+          segment: "SCRIPT",
+        },
+      ]);
+
+      setIsDeployed(true);
+      setDeployedStrategyCode("API_PREDICTION");
+    };
+
+    strategySocket.onAny((eventName, ...args) => {
+      // console.log(`[STRATEGY SOCKET] ${eventName}:`, args);
+    });
+
+    strategySocket.on(EVENTS.STRATEGY.PROGRESS, handleScannerProgress);
+    strategySocket.on(EVENTS.STRATEGY.COMPLETE, handleScannerComplete);
+    strategySocket.on(EVENTS.STRATEGY.NEW_SIGNAL, handleNewScannerSignal);
+    strategySocket.on(EVENTS.STRATEGY.ERROR, handleScannerError);
+    strategySocket.on(
+      EVENTS.STRATEGY.AI_PREDICTION_STATUS,
+      handleAiPredictionStatus,
+    );
+    strategySocket.on(EVENTS.STRATEGY.AI_TRADE_SIGNAL, handleAiTradeSignal);
+
+    return () => {
+      strategySocket.offAny();
+      strategySocket.off(EVENTS.STRATEGY.PROGRESS, handleScannerProgress);
+      strategySocket.off(EVENTS.STRATEGY.COMPLETE, handleScannerComplete);
+      strategySocket.off(EVENTS.STRATEGY.NEW_SIGNAL, handleNewScannerSignal);
+      strategySocket.off(EVENTS.STRATEGY.ERROR, handleScannerError);
+      strategySocket.off(
+        EVENTS.STRATEGY.AI_PREDICTION_STATUS,
+        handleAiPredictionStatus,
+      );
+      strategySocket.off(EVENTS.STRATEGY.AI_TRADE_SIGNAL, handleAiTradeSignal);
+    };
+  }, []);
+
+  // 2. Reactive Plotting Effect
+  useEffect(() => {
+    if (!isDeployed) return;
+
+    const markersToSet = [];
+    const newSignals = [];
+
+    if (dashboardSignals && dashboardSignals.length > 0) {
+      const uniqueDashboardSignals = [];
+      const seenDashboardSignals = new Set();
+      dashboardSignals.forEach((signal) => {
+        const key = `${signal.symbol}_${signal.timestamp}`;
+        if (!seenDashboardSignals.has(key)) {
+          seenDashboardSignals.add(key);
+          uniqueDashboardSignals.push(signal);
+        }
+      });
+
+      console.log(
+        "Processing dashboardSignals for markers:",
+        uniqueDashboardSignals,
+      );
+      console.log("Currently selected stock:", selectedCurrency);
+
+      uniqueDashboardSignals.forEach((item) => {
+        let type = item.signalType || item.response?.type;
+        if (!type) {
+          type = "BUY";
+        }
+        let utcStr =
+          item.timestamp ||
+          item.createdAt ||
+          item.updatedAt ||
+          item.tick?.datetime ||
+          item.response?.entry_time;
+        if (utcStr && typeof utcStr === "string") {
+          utcStr = utcStr.replace(" ", "T");
+        }
+
+        if (utcStr && type) {
+          const isBuy =
+            type.toUpperCase() === "BUY" || type.toUpperCase() === "CALL";
+
+          // Use unix_timestamp if available, else convert ISO
+          let utcTime;
+          if (item.unix_timestamp) {
+            utcTime = Number(item.unix_timestamp);
+          } else {
+            utcTime = Math.floor(new Date(utcStr).getTime() / 1000);
+          }
+
+          const intervalSeconds = (() => {
+            const val = parseInt(timeframeValue || "5");
+            if (String(timeframeValue).includes("h")) return val * 3600;
+            if (String(timeframeValue).includes("d")) return val * 86400;
+            return val * 60;
+          })();
+
+          const chartTime = Number(utcTime) + 19800; // IST_OFFSET (Removed intervalSeconds shift to ensure it plots on the exact entry_time candle)
+
+          // Only plot marker if the signal is for the CURRENTLY selected stock
+          const isCurrentStock =
+            isSameSymbolName(item.symbol, selectedCurrency?.name) ||
+            isSameSymbolName(item.symbol, selectedCurrency?.symbol);
+
+          if (isCurrentStock) {
+            markersToSet.push({
+              time: chartTime,
+              position: isBuy ? "belowBar" : "aboveBar",
+              color: isBuy ? "#22c55e" : "#ef4444",
+              shape: isBuy ? "arrowUp" : "arrowDown",
+              text: type.toUpperCase(),
+              size: 1,
+            });
+          } else {
+            console
+              .log
+              // `Skipped marker for ${item.symbol}: doesn't match selected ${selectedCurrency?.name} or ${selectedCurrency?.symbol}`,
+              ();
+          }
+
+          newSignals.unshift({
+            symbol: item.symbol || selectedCurrency?.name || "STOCK",
+            name: item.symbol || selectedCurrency?.name || "STOCK",
+            token: item.symbol,
+            signalType: type.toUpperCase(),
+            timestamp: new Date(utcStr).toLocaleString(),
+            segment: "SCRIPT",
+          });
+        }
+      });
+      const uniqueMarkers = [];
+      const seenTimes = new Set();
+      markersToSet.forEach((m) => {
+        if (!seenTimes.has(m.time)) {
+          seenTimes.add(m.time);
+          uniqueMarkers.push(m);
+        }
+      });
+      uniqueMarkers.sort((a, b) => a.time - b.time);
+      markersToSet.length = 0;
+      markersToSet.push(...uniqueMarkers);
+      console.log("Final markersToSet to plot on chart:", markersToSet);
+
+      // Auto-open Alerts panel if we have signals
+      if (newSignals?.length > 0 && deployedStrategyCode !== "API_PREDICTION") {
+        if (typeof setActiveTab === "function") {
+          setActiveTab("Alerts");
+        }
+      }
+    }
+
+    lastDeployedMarkersRef.current = markersToSet;
+    const shouldShowStrategyVisuals =
+      areStrategyVisualsVisibleRef.current !== false;
+
+    if (markersToSet?.length > 0 && seriesRef.current) {
+      if (!customScriptMarkersRef.current) {
+        customScriptMarkersRef.current = createSeriesMarkers(
+          seriesRef.current,
+          shouldShowStrategyVisuals ? markersToSet : [],
+        );
+        seriesRef.current.attachPrimitive(customScriptMarkersRef.current);
+      } else {
+        customScriptMarkersRef.current.setMarkers(
+          shouldShowStrategyVisuals ? markersToSet : [],
+        );
+      }
+    } else if (customScriptMarkersRef.current) {
+      customScriptMarkersRef.current.setMarkers([]);
+    }
+
+    setCustomSignals(newSignals);
+  }, [
+    dashboardSignals,
+    isDeployed,
+    selectedCurrency,
+    areStrategyVisualsVisible,
+  ]);
+
+  const handleDeployCode = useCallback(
+    async (code, runtimeContext = {}) => {
+      if (!chartRef.current) return;
+
+      const effectiveSymbol =
+        runtimeContext?.symbol ||
+        selectedCurrency?.name ||
+        selectedCurrency?.symbol;
+      const effectiveLookupSymbol =
+        runtimeContext?.lookupSymbol || selectedCurrency?.symbol;
+      const effectiveToken = runtimeContext?.token || selectedCurrency?.token;
+      const effectiveExchange =
+        runtimeContext?.exchange ||
+        selectedCurrency?.exchange ||
+        selectedCurrency?.segment;
+      const effectiveTimeframe = runtimeContext?.timeframe || timeframeValue;
+      const effectiveFromDate = runtimeContext?.fromDate || fromDate;
+      const requestedToDate = runtimeContext?.toDate || toDate;
+      const effectiveToDate = requestedToDate || getTodayDateString();
+
+      // 1. Clear previous
+      handleClearCode();
+      deploymentSignalsRef.current = [];
+
+      if (!code || code.trim() === "") {
+        Swal.fire({
+          icon: "warning",
+          title: "Empty Code",
+          text: "Please write some code before deploying.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        return;
+      }
+
+      // Detect if user has only left the default boilerplate template with no real logic
+      const BOILERPLATE_LINES = new Set([
+        "markers = []",
+        "# user strategy here",
+        "plot_markers(markers)",
+      ]);
+      const meaningfulLines = code
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !BOILERPLATE_LINES.has(l));
+
+      if (meaningfulLines.length === 0) {
+        Swal.fire({
+          icon: "warning",
+          title: "No Strategy Found",
+          text: "Please write your strategy logic before deploying. The editor only contains the default template.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        return;
+      }
+
+      // Require that the strategy actually references financial data variables.
+      // A strategy with only print() / comments isn't a valid signal generator.
+      const STRATEGY_VARIABLES = /\b(close|open|high|low|volume|df)\b/;
+      const hasStrategyLogic = meaningfulLines.some((l) =>
+        STRATEGY_VARIABLES.test(l),
+      );
+      if (!hasStrategyLogic) {
+        Swal.fire({
+          icon: "warning",
+          title: "No Strategy Logic Detected",
+          text: "Your code must use at least one market data variable (close, open, high, low, volume, or df) to generate signals.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        return;
+      }
+
+      setIsDeploying(true);
+      setScannerProgressData(null);
+
+      // 1.2 Basic Frontend Security Check (Warning: This is NOT a substitute for backend sandboxing)
+      const dangerousPatterns = [
+        /\beval\s*\(/,
+        /\bexec\s*\(/,
+        /\b__import__\s*\(/,
+        /\bopen\s*\(/,
+        /import\s+os\b/,
+        /import\s+subprocess\b/,
+        /import\s+sys\b/,
+        /from\s+os\b/,
+        /from\s+subprocess\b/,
+      ];
+
+      for (let pattern of dangerousPatterns) {
+        if (pattern.test(code)) {
+          Swal.fire({
+            icon: "error",
+            title: "Security Violation",
+            text: "Your code contains restricted keywords or functions (e.g., eval, exec, os).",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+          });
+          setIsDeploying(false);
+          return;
+        }
+      }
+
+      // 1.5 Validate Python Syntax on Frontend before API Call
+      if (!pyodideRef.current) {
+        Swal.fire({
+          icon: "warning",
+          title: "Engine Loading",
+          text: "The Python validation engine is still loading. Please wait a moment before deploying.",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        setIsDeploying(false);
+        return;
+      }
+
+      try {
+        const sanitizedCode = code.replace(/\u00A0/g, " ");
+        pyodideRef.current.globals.set("__code_to_validate", sanitizedCode);
+        const resultJson = await pyodideRef.current.runPythonAsync(`
+import ast
+import json
+import sys
+import traceback
+
+result = { "success": True, "error_type": None, "error_message": None, "output": "", "markers": [] }
+
+try:
+    ast.parse(__code_to_validate)
+except SyntaxError as e:
+    result["success"] = False
+    result["error_type"] = "SyntaxError"
+    exc_type, exc_value, exc_traceback = sys.exc_info()
+    tb_lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
+    result["error_message"] = "".join(tb_lines).strip()
+
+json.dumps(result)
+        `);
+
+        const result = JSON.parse(resultJson);
+        const capturedOutput = result.output;
+
+        if (capturedOutput && capturedOutput.trim() !== "") {
+          Swal.fire({
+            toast: true,
+            position: "bottom-end",
+            icon: "info",
+            title: "Console Output",
+            html: `<pre style="text-align: left; background: var(--bg-primary); padding: 5px; border-radius: 5px; color: var(--text-primary); max-height: 200px; overflow-y: auto;">${capturedOutput}</pre>`,
+            showConfirmButton: false,
+            timer: 5000,
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+          });
+        }
+
+        if (!result.success) {
+          Swal.fire({
+            icon: "error",
+            title: `Execution Error (${result.error_type})`,
+            text: result.error_message,
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+          });
+          setIsDeploying(false);
+          return;
+        }
+
+        const markersList = result.markers || [];
+        const isStructurallyValid = markersList.every(
+          (m) =>
+            typeof m === "object" &&
+            m !== null &&
+            "time" in m &&
+            "text" in m &&
+            "position" in m,
+        );
+
+        if (markersList?.length > 0 && !isStructurallyValid) {
+          Swal.fire({
+            icon: "warning",
+            title: "Invalid Markers",
+            text: "Your strategy ran successfully, but the markers generated were invalid. Ensure you append valid dictionaries containing 'time', 'text', and 'position'.",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+          });
+          setIsDeploying(false);
+          return;
+        }
+      } catch (err) {
+        console.error("Syntax Validation Error:", err);
+        const lines = err.message ? err.message.split("\n") : [];
+        // Extract the last few lines which contain the actual SyntaxError
+        const shortError =
+          lines.slice(-4).join("\n").trim() || "Invalid Python syntax.";
+
+        Swal.fire({
+          icon: "error",
+          title: "Syntax Error",
+          text: shortError,
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        setIsDeploying(false);
+        return;
+      }
+
+      try {
+        const closes = candlesRef?.current?.map((c) => c.close) || [];
+        if (closes?.length < 4) {
+          Swal.fire({
+            icon: "warning",
+            title: "Insufficient Data",
+            text: "Not enough candle data to plot indicator.",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+          });
+          setIsDeploying(false);
+          return;
+        }
+
+        toast.info("Evaluating Python script...", {
+          autoClose: 2000,
+          toastId: "compiling",
+        });
+
+        // Close Code Editor if open
+        if (typeof setIsCodeEditorOpen === "function") {
+          setIsCodeEditorOpen(false);
+        }
+
+        const localUser = JSON.parse(localStorage.getItem("session") || "{}");
+        const userId = localUser?.user?.id || localUser?.user?._id || "123";
+
+        // Guard: do not call the API if code is effectively empty
+        if (!code || !code.trim()) {
+          setIsDeploying(false);
+          return;
+        }
+
+        const shouldBypassStrategyAgent = isDirectChartLabScript(code);
+        let generationReply = "";
+        let runnableCode = code.trim();
+
+        if (!shouldBypassStrategyAgent) {
+          const generated = await generateStrategyAgent({
+            prompt: buildStrategyAgentPrompt(
+              code,
+              effectiveLookupSymbol || effectiveSymbol,
+              effectiveTimeframe,
+            ),
+            session_id: strategyAgentSessionIdRef.current,
+            user_id: userId,
+            current_file_path: "strategy.py",
+            current_editor_code: code,
+            project_summary:
+              "ChartLab Python strategy editor. Convert editor strategies into runnable sandbox code and preserve signal behavior.",
+            timeframe: effectiveTimeframe,
+            market: effectiveLookupSymbol || effectiveSymbol,
+            constraints: [
+              "Return only executable Python code.",
+              "Use ChartLab-compatible Python.",
+              "Emit BUY/SELL markers with signal(...) when possible.",
+            ],
+          });
+
+          if (generated?.session_id) {
+            strategyAgentSessionIdRef.current = generated.session_id;
+          }
+
+          generationReply = generated?.reply || "";
+
+          const canReplaceEditor =
+            generated?.replace_editor_code === true &&
+            typeof generated?.code === "string" &&
+            generated.code.trim().length > 0 &&
+            generated?.meta?.code_validation_passed === true &&
+            generated?.meta?.security_validation_passed === true;
+
+          if (!canReplaceEditor) {
+            Swal.fire({
+              icon: "warning",
+              title: generated?.title || "Strategy Generation Failed",
+              text:
+                generated?.reply ||
+                "The strategy agent could not produce runnable code from the editor content.",
+              background: "var(--bg-secondary)",
+              color: "var(--text-primary)",
+            });
+            setIsDeploying(false);
+            toast.dismiss("compiling");
+            return;
+          }
+
+          runnableCode = generated.code.trim();
+          setEditorCode(runnableCode);
+        }
+
+        const sandboxResponse = await executeIndicatorSandbox({
+          sessionId: sandboxSessionIdRef.current,
+          resetBeforeExecution: Boolean(sandboxSessionIdRef.current),
+          timeoutSeconds: 120,
+          mode: "indicator",
+          code: runnableCode,
+          inputs: {
+            symbol: effectiveSymbol,
+            lookupSymbol: effectiveLookupSymbol,
+            token: effectiveToken,
+            timeframe: effectiveTimeframe,
+            exchange: effectiveExchange,
+            fromDate: effectiveFromDate,
+            toDate: effectiveToDate,
+            settings: {
+              use_historical_only: !isMarketOpen,
+              pane: null,
+            },
+          },
+        });
+
+        if (sandboxResponse?.sessionStatus?.sessionId) {
+          sandboxSessionIdRef.current = sandboxResponse.sessionStatus.sessionId;
+        }
+
+        if (!sandboxResponse?.success) {
+          const firstError = sandboxResponse?.errors?.[0];
+          const fetchError =
+            sandboxResponse?.result?.settings?.backendCandleFetchError ||
+            sandboxResponse?.settings?.backendCandleFetchError;
+          Swal.fire({
+            icon: "error",
+            title: "Sandbox Execution Error",
+            text:
+              fetchError ||
+              firstError?.message ||
+              generationReply ||
+              "The strategy code could not be executed in the sandbox.",
+            background: "var(--bg-secondary)",
+            color: "var(--text-primary)",
+          });
+          setIsDeploying(false);
+          toast.dismiss("compiling");
+          return;
+        }
+
+        const chartSignals =
+          sandboxResponse?.result?.chart?.signals ||
+          sandboxResponse?.result?.signals ||
+          [];
+        const apiRows = normalizeApiBacktestRows(
+          sandboxResponse?.tables,
+          effectiveLookupSymbol || effectiveSymbol,
+          effectiveTimeframe,
+        );
+
+        const normalizedSignals = chartSignals
+          .map((signal) => {
+            const signalTime = normalizeChartTime(signal?.time);
+            if (signalTime === null) return null;
+
+            return {
+              symbol: effectiveLookupSymbol || effectiveSymbol,
+              signalType: String(
+                signal?.side || signal?.label || "BUY",
+              ).toUpperCase(),
+              timestamp: new Date(signalTime * 1000).toISOString(),
+              unix_timestamp: signalTime,
+              segment: "SCRIPT",
+            };
+          })
+          .filter(Boolean);
+
+        renderSandboxPlots(sandboxResponse?.result?.chart);
+        setApiBacktestRows(apiRows);
+        setDashboardSignals(normalizedSignals);
+        setCustomSignals(normalizedSignals);
+        setDeployedStrategyCode(SANDBOX_DEPLOYMENT_CODE);
+        setIsDeployed(true);
+        setIsDeploying(false);
+        toast.dismiss("compiling");
+        toast.success(
+          normalizedSignals.length > 0
+            ? "Strategy executed and plotted successfully."
+            : "Strategy executed successfully.",
+        );
+      } catch (err) {
+        console.error("Python Execution Error:", err);
+        Swal.fire({
+          icon: "error",
+          title: "Python Execution Error",
+          text:
+            err?.response?.data?.detail ||
+            err?.response?.data?.message ||
+            err?.message ||
+            "An error occurred",
+          background: "var(--bg-secondary)",
+          color: "var(--text-primary)",
+        });
+        toast.dismiss("compiling");
+        setIsDeploying(false);
+      }
+    },
+    [
+      handleClearCode,
+      fromDate,
+      isMarketOpen,
+      renderSandboxPlots,
+      selectedCurrency,
+      timeframeValue,
+      toDate,
+    ],
+  );
+
+  const handleSelectSavedStrategy = useCallback(
+    async (strategy) => {
+      console.log(
+        "[Strategy] Selected strategy name:",
+     strategy?.strategyName,
+      );
+      const strategyCode =
+        typeof strategy?.code === "string" && strategy.code.trim()
+          ? strategy.code
+          : DEFAULT_EDITOR_CODE;
+      const savedTimeframe = strategy?.config?.timeframe;
+      const savedConfig = strategy?.config || {};
+
+      setEditorCode(strategyCode);
+      setActiveStrategyRecord(strategy);
+      setIsStrategyDirty(false);
+      setAreStrategyVisualsVisible(true);
+      if (savedTimeframe) {
+        skipNextTimeframeAutoDeployRef.current = true;
+        setTimeframeValue(savedTimeframe);
+      }
+      setIsCodeEditorOpen(false);
+
+      await handleDeployCode(strategyCode, {
+        symbol: savedConfig?.symbol || selectedCurrency?.name,
+        lookupSymbol: savedConfig?.lookupSymbol || selectedCurrency?.symbol,
+        token: savedConfig?.token || selectedCurrency?.token,
+        exchange:
+          savedConfig?.exchange ||
+          selectedCurrency?.exchange ||
+          selectedCurrency?.segment,
+        timeframe: savedConfig?.timeframe || timeframeValue,
+        fromDate: savedConfig?.fromDate || fromDate,
+        toDate: savedConfig?.toDate || toDate,
+      });
+    },
+    [fromDate, handleDeployCode, selectedCurrency, timeframeValue, toDate],
+  );
+
+  useEffect(() => {
+    const checkMarketStatus = () => {
+      const now = new Date();
+
+      // IST time
+      const istTime = new Date(
+        now.toLocaleString("en-US", {
+          timeZone: "Asia/Kolkata",
+        }),
+      );
+
+      const day = istTime.getDay(); // 0 = Sunday, 6 = Saturday
+      const hours = istTime.getHours();
+      const minutes = istTime.getMinutes();
+
+      const currentMinutes = hours * 60 + minutes;
+
+      // Market timings: 9:15 AM to 3:30 PM
+      const marketStart = 9 * 60 + 15;
+      const marketEnd = 15 * 60 + 30;
+
+      const isWeekday = day >= 1 && day <= 5;
+
+      const open =
+        isWeekday &&
+        currentMinutes >= marketStart &&
+        currentMinutes <= marketEnd;
+
+      setIsMarketOpen(open);
+    };
+
+    // Initial check
+    checkMarketStatus();
+
+    // Update every 5 minute
+    const interval = setInterval(checkMarketStatus, 300000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Update fromDate dynamically to optimize load times when timeframe changes
+  useEffect(() => {
+    const d = getInitialLookbackDate(timeframeValue);
+    handleSetFromDate(d.toISOString().split("T")[0]);
+  }, [timeframeValue]);
+
+  useEffect(() => {
+    if (previousTimeframeRef.current === timeframeValue) {
+      return;
+    }
+
+    previousTimeframeRef.current = timeframeValue;
+
+    if (skipNextTimeframeAutoDeployRef.current) {
+      skipNextTimeframeAutoDeployRef.current = false;
+      return;
+    }
+
+    if (
+      !isDeployed ||
+      deployedStrategyCode !== SANDBOX_DEPLOYMENT_CODE ||
+      isDeploying ||
+      !editorCode?.trim()
+    ) {
+      return;
+    }
+
+    const nextFromDate = getInitialLookbackDate(timeframeValue);
+    const minDate = new Date("2024-10-01");
+    const effectiveFromDate =
+      nextFromDate < minDate
+        ? "2024-10-01"
+        : nextFromDate.toISOString().split("T")[0];
+
+    handleDeployCode(editorCode, {
+      timeframe: timeframeValue,
+      fromDate: effectiveFromDate,
+      toDate,
+    });
+  }, [
+    deployedStrategyCode,
+    editorCode,
+    handleDeployCode,
+    isDeployed,
+    isDeploying,
+    timeframeValue,
+    toDate,
+  ]);
+
+  useEffect(() => {
+    const previousRange = previousDateRangeRef.current;
+    const rangeChanged =
+      previousRange?.fromDate !== fromDate || previousRange?.toDate !== toDate;
+
+    previousDateRangeRef.current = { fromDate, toDate };
+
+    if (!rangeChanged) {
+      return;
+    }
+
+    if (
+      !isDeployed ||
+      deployedStrategyCode !== SANDBOX_DEPLOYMENT_CODE ||
+      isDeploying ||
+      !editorCode?.trim()
+    ) {
+      return;
+    }
+
+    const dateDeployKey = [
+      selectedCurrency?.symbol || selectedCurrency?.name || "",
+      timeframeValue,
+      fromDate,
+      toDate,
+    ].join("|");
+
+    if (lastDateRangeAutoDeployKeyRef.current === dateDeployKey) {
+      return;
+    }
+
+    lastDateRangeAutoDeployKeyRef.current = dateDeployKey;
+
+    handleDeployCode(editorCode, {
+      timeframe: timeframeValue,
+      fromDate,
+      toDate,
+    });
+  }, [
+    deployedStrategyCode,
+    editorCode,
+    fromDate,
+    handleDeployCode,
+    isDeployed,
+    isDeploying,
+    selectedCurrency,
+    timeframeValue,
+    toDate,
+  ]);
+
+  const addStockToDetails = (stock) => {
+    if (detailsList.find((s) => s.symbol === stock.symbol)) return;
+
+    setDetailsList((prev) => [...prev, stock]);
+
+    // Keep Details requests aligned with the chart's active timeframe.
+    if (socketRef.current) {
+      socketRef.current.emit("getManualHistoricalData", {
+        symbol: stock.name || stock.symbol,
+        interval: timeframeValue || "5m",
+        fromDate: fromDate,
+        toDate: toDate,
+      });
+    }
+  };
+
+  const removeStockFromDetails = (symbol) => {
+    setDetailsList((prev) => prev.filter((s) => s.symbol !== symbol));
+  };
+  const [showAlertForm, setShowAlertForm] = useState(false);
+  const [indicatorProperty, setIndicatorProperty] = useState(false);
+  const [indicatorLoading, setIndicatorLoading] = useState(false);
+  const [showSourcePanel, setShowSourcePanel] = useState(false);
+  const [activeSourceIndicator, setActiveSourceIndicator] = useState(null);
+  const [indicatorVisibility, setIndicatorVisibility] = useState(() => {
+    try {
+      const saved = localStorage.getItem("chart_indicatorVisibility");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {};
+  });
+  const [activeBarIndicator, setActiveBarIndicator] = useState("");
+  const [indicatorUpdateTrigger, setIndicatorUpdateTrigger] = useState(0);
+  const prevTimeframeRef = useRef(timeframeValue);
+  const prevCurrencyRef = useRef(selectedCurrency);
+  const prevChartTypeRef = useRef(chartType);
+  const prevFromDateRef = useRef(fromDate);
+  const prevToDateRef = useRef(toDate);
+  const currentCandleRef = useRef(null);
+  const lastCandleTimeRef = useRef(null);
+  const candlesRef = useRef([]);
+  const reconciliationRunningRef = useRef(false);
+  const reconciliationAbortRef = useRef(null);
+  const reconciliationGenerationRef = useRef(0);
+  const lastValidTickAtRef = useRef(Date.now());
+  const pendingLiveBarRef = useRef(null);
+  const pendingLiveBarMetaRef = useRef({ shouldAutoScale: false });
+  const lastQueuedLiveBarSignatureRef = useRef(null);
+  const lastRenderedLiveBarSignatureRef = useRef(null);
+  const liveBarFlushTimerRef = useRef(null);
+  const liveAutoScaleResetTimerRef = useRef(null);
+  const lastLiveBarPaintAtRef = useRef(0);
+  const seriesReadyRef = useRef(false);
+  const selectedIndicatorRef = useRef(selectedIndicator);
+  const liveIndicatorContextRef = useRef({
+    symbol: selectedCurrency?.name || selectedCurrency?.symbol,
+    interval: timeframeValue,
+    exchange: selectedCurrency?.segment,
+  });
+  const chartTypeRef = useRef(chartType);
+  const crosshairActiveRef = useRef(false);
+  const ohlcvDisplayRef = useRef(null);
+  const actionButtonsRef = useRef(null);
+  const strategyMarkersRef = useRef(null); //ref for markers
+  const markersLoadedRef = useRef(false);
+  // o. Always-current refs so persistent handlers never capture stale closures
+  const selectedCurrencyRef = useRef(selectedCurrency);
+  const intervalSecRef = useRef(TIMEFRAME_TO_SECONDS[timeframeValue] ?? 60);
+  const IST_OFFSET = 19800;
+  const LIVE_BAR_RENDER_INTERVAL_MS = 450;
+  const historicalLiveGuardLogRef = useRef({
+    liveSkip: "",
+    reconcileSkip: "",
+    liveEligible: "",
+  });
+
+  const getLoadedCandleRange = useCallback(() => {
+    const loadedCandles = candlesRef.current;
+    if (!Array.isArray(loadedCandles) || loadedCandles.length === 0) {
+      return { firstTime: null, lastTime: null, firstDate: null, lastDate: null };
+    }
+
+    const firstTime = Number(loadedCandles[0]?.time);
+    const lastTime = Number(loadedCandles[loadedCandles.length - 1]?.time);
+    const toDateString = (chartTime) =>
+      Number.isFinite(chartTime)
+        ? new Date((chartTime - IST_OFFSET) * 1000).toISOString().split("T")[0]
+        : null;
+
+    return {
+      firstTime: Number.isFinite(firstTime) ? firstTime : null,
+      lastTime: Number.isFinite(lastTime) ? lastTime : null,
+      firstDate: toDateString(firstTime),
+      lastDate: toDateString(lastTime),
+    };
+  }, []);
+
+  const buildLiveBarSignature = useCallback((bar) => {
+    if (!bar) return "";
+
+    const normalizeNumber = (value) =>
+      Number.isFinite(Number(value)) ? Number(value).toFixed(2) : "NA";
+
+    return [
+      bar.time,
+      normalizeNumber(bar.open),
+      normalizeNumber(bar.high),
+      normalizeNumber(bar.low),
+      normalizeNumber(bar.close),
+      normalizeNumber(bar.volume),
+    ].join("|");
+  }, []);
+
+  const setMainChartAutoScale = useCallback((enabled) => {
+    if (!chartRef.current) return;
+    try {
+      chartRef.current.priceScale("right").applyOptions({
+        autoScale: enabled,
+        mode: 0,
+        scaleMargins: {
+          top: 0.28,
+          bottom: 0.18,
+        },
+      });
+    } catch {}
+  }, []);
+
+  const normalizeSeriesTime = useCallback((value) => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+
+    if (typeof value === "string") {
+      const numericValue = Number(value);
+      if (Number.isFinite(numericValue)) return numericValue;
+
+      const parsedMs = Date.parse(value);
+      if (Number.isFinite(parsedMs)) return Math.floor(parsedMs / 1000);
+      return null;
+    }
+
+    if (
+      value &&
+      typeof value === "object" &&
+      Number.isFinite(value.year) &&
+      Number.isFinite(value.month) &&
+      Number.isFinite(value.day)
+    ) {
+      return Math.floor(
+        Date.UTC(value.year, value.month - 1, value.day) / 1000,
+      );
+    }
+
+    return null;
+  }, []);
+
+  const writeOhlcvDisplay = useCallback((bar) => {
+    if (!bar || !ohlcvDisplayRef.current) return;
+
+    const el = ohlcvDisplayRef.current;
+    if (chartTypeRef.current === "line") {
+      const value = Number(bar.close);
+      if (!Number.isFinite(value)) return;
+      const o = el.querySelector("[data-o]");
+      if (o) o.textContent = value.toFixed(2);
+      el.querySelectorAll("[data-val]").forEach(
+        (span) => (span.style.color = "#2962ff"),
+      );
+      return;
+    }
+
+    const isUp = Number(bar.close) >= Number(bar.open);
+    const color = isUp ? "#22c55e" : "#ef4444";
+    const o = el.querySelector("[data-o]");
+    const h = el.querySelector("[data-h]");
+    const l = el.querySelector("[data-l]");
+    const c = el.querySelector("[data-c]");
+
+    if (o) o.textContent = Number(bar.open).toFixed(2);
+    if (h) h.textContent = Number(bar.high).toFixed(2);
+    if (l) l.textContent = Number(bar.low).toFixed(2);
+    if (c) c.textContent = Number(bar.close).toFixed(2);
+    el.querySelectorAll("[data-val]").forEach((s) => (s.style.color = color));
+  }, []);
+
+  const writeActionButtonPrices = useCallback((bar) => {
+    if (!bar || !actionButtonsRef.current) return;
+
+    const buyPrice = actionButtonsRef.current.querySelector("[data-buy-price]");
+    const sellPrice =
+      actionButtonsRef.current.querySelector("[data-sell-price]");
+    const formattedClose = Number(bar.close).toFixed(2);
+
+    if (buyPrice) buyPrice.textContent = formattedClose;
+    if (sellPrice) sellPrice.textContent = formattedClose;
+  }, []);
+
+  const restoreLiveHeader = useCallback(() => {
+    writeOhlcvDisplay(currentCandleRef.current);
+    writeActionButtonPrices(currentCandleRef.current);
+  }, [writeActionButtonPrices, writeOhlcvDisplay]);
+
+  const buildSeriesDataForChartType = useCallback((data, activeChartType) => {
+    if (!Array.isArray(data)) return [];
+
+    switch (activeChartType) {
+      case "line":
+      case "area":
+      case "baseline":
+        return data.map((d) => ({
+          time: d.time,
+          value: Number(d.close),
+        }));
+      case "histogram":
+        return data.map((d, index, arr) => {
+          const prev = arr[index - 1];
+          const isUp = prev ? Number(d.close) >= Number(prev.close) : true;
+          return {
+            time: d.time,
+            value: Number(d.volume || 0),
+            color: isUp ? "#22c55e" : "#ef4444",
+          };
+        });
+      case "heikinashi":
+        return convertToHeikinAshi(data);
+      default:
+        return data;
+    }
+  }, []);
+
+  const buildLiveSeriesPoint = useCallback((bar, activeChartType) => {
+    if (!bar) return null;
+
+    switch (activeChartType) {
+      case "line":
+      case "area":
+      case "baseline":
+        return {
+          time: bar.time,
+          value: Number(bar.close),
+        };
+      case "histogram": {
+        const candles = candlesRef.current;
+        const index = candles.findIndex((c) => c.time === bar.time);
+        const prev = index > 0 ? candles[index - 1] : null;
+        const isUp = prev ? Number(bar.close) >= Number(prev.close) : true;
+        return {
+          time: bar.time,
+          value: Number(bar.volume || 0),
+          color: isUp ? "#22c55e" : "#ef4444",
+        };
+      }
+      case "heikinashi": {
+        const sourceData = candlesRef.current;
+        const heikinData = convertToHeikinAshi(sourceData);
+        return heikinData[heikinData.length - 1] || null;
+      }
+      default:
+        return bar;
+    }
+  }, []);
+
+  useEffect(() => {
+    selectedIndicatorRef.current = selectedIndicator;
+  }, [selectedIndicator]);
+
+  useEffect(() => {
+    selectedCurrencyRef.current = selectedCurrency;
+  }, [selectedCurrency]);
+
+  useEffect(() => {
+    chartTypeRef.current = chartType;
+  }, [chartType]);
+
+  useEffect(() => {
+    historyBackfillInFlightRef.current = false;
+    lastAutoBackfillFromRef.current = null;
+    lastAutoForwardToRef.current = null;
+  }, [selectedCurrency?.name, timeframeValue]);
+
+  const lastSelectedCurrencyRef = useRef(selectedCurrency?.name);
+
+  useEffect(() => {
+    if (
+      selectedCurrency?.name &&
+      selectedCurrency.name !== lastSelectedCurrencyRef.current
+    ) {
+      lastSelectedCurrencyRef.current = selectedCurrency.name;
+
+      const d = getInitialLookbackDate(timeframeValue);
+      const minDate = new Date("2024-10-01");
+      const initialFrom =
+        d < minDate ? "2024-10-01" : d.toISOString().split("T")[0];
+      const initialTo = getTodayDateString();
+
+      handleSetFromDate(initialFrom);
+      setToDate(initialTo);
+    }
+  }, [selectedCurrency?.name, timeframeValue]);
+
+  // Persist selectedCurrency so it survives page refresh
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "selectedCurrency",
+        JSON.stringify(selectedCurrency),
+      );
+    } catch (e) {
+      console.warn("Failed to save selectedCurrency to localStorage", e);
+    }
+  }, [selectedCurrency]);
+
+  useEffect(() => {
+    intervalSecRef.current = TIMEFRAME_TO_SECONDS[timeframeValue] ?? 60;
+  }, [timeframeValue]);
+
+  useEffect(() => {
+    if (activeTab === "Alerts") {
+      setIsWatchlistOpen(true);
+    }
+  }, [activeTab]);
+
+  const resolveBacktestSignalTime = useCallback((signal) => {
+    if (!signal) return null;
+
+    if (signal.unix_timestamp !== undefined && signal.unix_timestamp !== null) {
+      const unixTime = normalizeChartTime(signal.unix_timestamp);
+      return unixTime === null ? null : unixTime + CHART_TIME_OFFSET_SECONDS;
+    }
+
+    const sourceTime =
+      signal.timestamp ||
+      signal.createdAt ||
+      signal.updatedAt ||
+      signal.tick?.datetime ||
+      signal.response?.entry_time ||
+      signal.time;
+
+    return toChartTimestamp(sourceTime);
+  }, []);
+
+  const backtestSourceSignals = useMemo(() => {
+    if (Array.isArray(customSignals) && customSignals.length > 0) {
+      return customSignals;
+    }
+
+    if (Array.isArray(dashboardSignals) && dashboardSignals.length > 0) {
+      return dashboardSignals;
+    }
+
+    return [];
+  }, [customSignals, dashboardSignals]);
+
+  const resolvedBacktestRows = useMemo(() => {
+    return apiBacktestRows.length > 0 ? apiBacktestRows : backtestRows;
+  }, [apiBacktestRows, backtestRows]);
+
+  useEffect(() => {
+    const chartCandles = Array.isArray(candlesRef.current)
+      ? candlesRef.current
+      : [];
+
+    if (!backtestSourceSignals.length) {
+      setBacktestRows([]);
+      return;
+    }
+
+    const selectedName = selectedCurrency?.name;
+    const selectedSymbol = selectedCurrency?.symbol;
+    const timeframeSeconds = Math.max(
+      1,
+      TIMEFRAME_TO_SECONDS[timeframeValue] ?? 60,
+    );
+    const filteredSignals = backtestSourceSignals.filter((signal) => {
+      if (!signal?.symbol) return true;
+
+      return (
+        isSameSymbolName(signal.symbol, selectedName) ||
+        isSameSymbolName(signal.symbol, selectedSymbol)
+      );
+    });
+    const signalsToUse =
+      filteredSignals.length > 0 ? filteredSignals : backtestSourceSignals;
+
+    const rows = signalsToUse
+      .map((signal, index) => {
+        const chartTime = resolveBacktestSignalTime(signal);
+        if (!Number.isFinite(chartTime)) return null;
+
+        let matchedCandle = null;
+
+        if (chartCandles.length > 0) {
+          matchedCandle =
+            chartCandles.find((candle) => candle?.time === chartTime) || null;
+        }
+
+        if (!matchedCandle && chartCandles.length > 0) {
+          let smallestDiff = Infinity;
+
+          for (const candle of chartCandles) {
+            const candleTime = Number(candle?.time);
+            if (!Number.isFinite(candleTime)) continue;
+
+            const diff = Math.abs(candleTime - chartTime);
+            if (diff <= timeframeSeconds && diff < smallestDiff) {
+              matchedCandle = candle;
+              smallestDiff = diff;
+            }
+          }
+        }
+
+        const signalType = String(
+          signal.signalType || signal.response?.type || signal.side || "BUY",
+        ).toUpperCase();
+        const sourceTime =
+          matchedCandle?.time ||
+          chartTime ||
+          toChartTimestamp(signal.response?.entry_time) ||
+          toChartTimestamp(signal.timestamp);
+        const ohlc = getSignalBacktestOhlc(signal, matchedCandle);
+
+        if (
+          !matchedCandle &&
+          !Number.isFinite(ohlc.open) &&
+          !Number.isFinite(ohlc.high) &&
+          !Number.isFinite(ohlc.low) &&
+          !Number.isFinite(ohlc.close)
+        ) {
+          return null;
+        }
+
+        return {
+          id: `${sourceTime}-${signalType}-${index}`,
+          signalType,
+          label:
+            signal.label ||
+            signal.response?.label ||
+            signal.response?.type ||
+            signalType,
+          symbol: signal.symbol || selectedName || selectedSymbol || "--",
+          timeframe: timeframeValue,
+          dateTime: formatBacktestDateTime(sourceTime),
+          time: sourceTime,
+          open: ohlc.open,
+          high: ohlc.high,
+          low: ohlc.low,
+          close: ohlc.close,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.time - b.time);
+
+    setBacktestRows(rows);
+  }, [
+    backtestSourceSignals,
+    candleDataVersion,
+    selectedCurrency,
+    timeframeValue,
+    resolveBacktestSignalTime,
+  ]);
+
+  const [indicatorConfigs, setIndicatorConfigs] = useState(() => {
+    try {
+      const saved = localStorage.getItem("chart_indicatorConfigs");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {};
+  }); // keyed by instance id
+
+  const [indicatorStyle, setIndicatorStyle] = useState(() => {
+    try {
+      const saved = localStorage.getItem("chart_indicatorStyle");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return indicatorStyleDefault;
+  });
+  const indicatorStyleRef = useRef(indicatorStyle);
+
+  useEffect(() => {
+    indicatorStyleRef.current = indicatorStyle;
+  }, [indicatorStyle]);
+
+  // Sync state to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem("chart_fromDate", fromDate);
+    } catch (e) {}
+  }, [fromDate]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("chart_toDate", toDate);
+    } catch (e) {}
+  }, [toDate]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "chart_selectedIndicator",
+        JSON.stringify(selectedIndicator),
+      );
+    } catch (e) {}
+  }, [selectedIndicator]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "chart_indicatorVisibility",
+        JSON.stringify(indicatorVisibility),
+      );
+    } catch (e) {}
+  }, [indicatorVisibility]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "chart_indicatorConfigs",
+        JSON.stringify(indicatorConfigs),
+      );
+    } catch (e) {}
+  }, [indicatorConfigs]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "chart_indicatorStyle",
+        JSON.stringify(indicatorStyle),
+      );
+    } catch (e) {}
+  }, [indicatorStyle]);
+  const isUp = liveOhlcv?.close >= liveOhlcv?.open;
+  const valueColor = isUp ? "text-green-500" : "text-red-500";
+  // eslint-disable-next-line no-unused-expressions
+  void indicatorUpdateTrigger; // keep this ?" forces re-eval when data arrives (ref reads don't re-render)
+  const hasPaneIndicators = selectedIndicator.some(
+    (ind) =>
+      PANE_INDICATORS.has(typeof ind === "object" ? ind.type : ind) &&
+      indicatorDataRef.current?.[typeof ind === "object" ? ind.id : ind] !==
+        undefined,
+  );
+  const totalIndicatorCount = selectedIndicator.length;
+  const mainChartIndicatorLegendCount = selectedIndicator.filter((ind) => {
+    if (ind.type === "VP") return true;
+    if (!PANE_INDICATORS.has(ind.type)) return true;
+    const paneDiv = panesRef.current[ind.id]?.pane?.getHTMLElement();
+    return !paneDiv;
+  }).length;
+  const hiddenMainIndicatorLegendCount = Math.max(
+    0,
+    mainChartIndicatorLegendCount -
+      (visibleMainIndicatorLegendCount ?? Number.MAX_SAFE_INTEGER),
+  );
+
+  useEffect(() => {
+    let resizeObserver;
+    let animationFrame;
+
+    const updateVisibleLegendCount = () => {
+      const mainPane = chartRef.current?.panes?.()[0]?.getHTMLElement?.();
+      if (!mainPane) return;
+
+      const availableLegendHeight =
+        mainPane.getBoundingClientRect().height - 90;
+      const visibleCountWithoutSummary = Math.max(
+        0,
+        Math.floor((availableLegendHeight - 20) / 20),
+      );
+      const nextVisibleCount =
+        mainChartIndicatorLegendCount > visibleCountWithoutSummary
+          ? Math.max(0, Math.floor((availableLegendHeight - 40) / 20))
+          : visibleCountWithoutSummary;
+
+      setVisibleMainIndicatorLegendCount((current) =>
+        current === nextVisibleCount ? current : nextVisibleCount,
+      );
+
+      if (!resizeObserver && typeof ResizeObserver !== "undefined") {
+        resizeObserver = new ResizeObserver(updateVisibleLegendCount);
+        resizeObserver.observe(mainPane);
+      }
+    };
+
+    updateVisibleLegendCount();
+    animationFrame = requestAnimationFrame(updateVisibleLegendCount);
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      resizeObserver?.disconnect();
+    };
+  }, [
+    selectedIndicator,
+    indicatorUpdateTrigger,
+    mainChartIndicatorLegendCount,
+  ]);
+
+  const fetchStrategyMarkers = async () => {
+    try {
+      console.log("fetchStrategyMarkers: enter");
+      console.log(
+        "fetchStrategyMarkers: seriesRef.current exists?",
+        !!seriesRef.current,
+      );
+
+      const symbol = selectedCurrencyRef.current?.name;
+      console.log("fetchStrategyMarkers: active symbol:", symbol);
+      if (!symbol) {
+        console.log("fetchStrategyMarkers: no active symbol, aborting");
+        return;
+      }
+
+      const apiSymbol = encodeURIComponent(symbol);
+      console.log("fetchStrategyMarkers: requesting markers for:", apiSymbol);
+      const response = await apiService.get(
+        `/api/strategy/markers?symbol=BOSCHLTD&months=6`,
+      );
+      console.log("strategy markers response:", response);
+
+      if (!response?.success || !Array.isArray(response?.markers)) {
+        console.warn("No markers returned");
+        return;
+      }
+
+      // If API returned a symbol, ensure it matches the currently selected symbol.
+      if (response.symbol) {
+        const normalizeStr = (s) =>
+          String(s || "")
+            .replace(/[^a-z0-9]/gi, "")
+            .toUpperCase();
+        if (normalizeStr(response.symbol) !== normalizeStr(symbol)) {
+          console.log(
+            `Received markers for ${response.symbol} but active is ${symbol} ?" skipping`,
+          );
+          return;
+        }
+      }
+
+      const intervalSeconds = (() => {
+        const val = parseInt(timeframeValue || "5");
+        if (String(timeframeValue).includes("h")) return val * 3600;
+        if (String(timeframeValue).includes("d")) return val * 86400;
+        return val * 60;
+      })();
+
+      const markers = response?.markers
+        .map((marker) => ({
+          // marker.datetimeUTC is in seconds (UTC) ?" align with candle times (which use IST_OFFSET)
+          time: Number(marker.datetimeUTC) + IST_OFFSET,
+          position: marker.type === "BUY" ? "belowBar" : "aboveBar",
+          color: marker.type === "BUY" ? "#22ab94" : "#ef4444",
+          shape: marker.type === "BUY" ? "arrowUp" : "arrowDown",
+          text: marker.type,
+          size: 2,
+        }))
+        .filter((m) => Number.isFinite(m.time));
+
+      console.log("Strategy markers:", markers?.length);
+
+      if (!strategyMarkersRef.current) {
+        strategyMarkersRef.current = createSeriesMarkers(
+          seriesRef.current,
+          markers,
+        );
+        seriesRef.current.attachPrimitive(strategyMarkersRef.current);
+      } else {
+        strategyMarkersRef?.current.setMarkers(markers);
+      }
+    } catch (error) {
+      console.error("Failed to fetch strategy markers:", error);
+    }
+  };
+
+  useEffect(() => {
+    markersLoadedRef.current = false;
+
+    if (strategyMarkersRef.current) {
+      strategyMarkersRef.current.setMarkers([]);
+    }
+  }, [selectedCurrency?.name]);
+
+  useEffect(() => {
+    if (!selectedIndicator?.length) return;
+
+    const isContextChange =
+      prevTimeframeRef.current !== timeframeValue ||
+      prevCurrencyRef.current !== selectedCurrency?.name ||
+      prevChartTypeRef.current !== chartType ||
+      prevFromDateRef.current !== fromDate ||
+      prevToDateRef.current !== toDate;
+
+    if (isContextChange) {
+      // Reset tracking on context change so we fetch fresh data once candles are ready
+      fetchedIndicatorsRef.current.clear();
+      indicatorFailureCountRef.current.clear();
+      indicatorBlockedRef.current.clear();
+      indicatorInFlightRef.current.clear();
+      indicatorErrorShownRef.current.clear();
+
+      prevTimeframeRef.current = timeframeValue;
+      prevCurrencyRef.current = selectedCurrency?.name;
+      prevChartTypeRef.current = chartType;
+      prevFromDateRef.current = fromDate;
+      prevToDateRef.current = toDate;
+    }
+
+    if (isFetchingCandles) return; // Prevent fetching while candles are loading
+    if (isContextChange && suppressNextIndicatorContextFetchRef.current) {
+      suppressNextIndicatorContextFetchRef.current = false;
+      return;
+    }
+
+    let indicatorsToFetch = selectedIndicator;
+
+    if (!isContextChange) {
+      // o. Only fetch newly added instances
+      indicatorsToFetch = selectedIndicator.filter(
+        (ind) => !fetchedIndicatorsRef.current.has(ind.id),
+      );
+
+      if (indicatorsToFetch?.length === 0) return;
+    }
+
+    setIndicatorLoading(true);
+    safeFetchIndicatorData(indicatorsToFetch, selectedCurrency, timeframeValue)
+      .then(() => {
+        setIndicatorUpdateTrigger((v) => v + 1);
+      })
+      .finally(() => {
+        setIndicatorLoading(false);
+      });
+
+    indicatorsToFetch.forEach((ind) =>
+      fetchedIndicatorsRef.current.add(ind.id),
+    );
+
+    // o. Explicitly clean up REMOVED indicators
+    const currentIds = new Set(selectedIndicator?.map((ind) => ind.id) || []);
+    const removedIds = [...fetchedIndicatorsRef.current].filter(
+      (id) => !currentIds.has(id),
+    );
+
+    if (removedIds.length > 0) {
+      removedIds.forEach((id) => {
+        // Remove physical series
+        allCreatedSeriesRef.current = allCreatedSeriesRef.current.filter(
+          (item) => {
+            if (item.id === id) {
+              try {
+                chartRef.current?.removeSeries(item.series);
+              } catch (e) {}
+              return false;
+            }
+            return true;
+          },
+        );
+        // Remove tracking data
+        fetchedIndicatorsRef.current.delete(id);
+        for (const key of [
+          ...indicatorFailureCountRef.current.keys(),
+          ...indicatorBlockedRef.current,
+          ...indicatorErrorShownRef.current,
+        ]) {
+          if (key.endsWith(`|${id}`)) {
+            indicatorFailureCountRef.current.delete(key);
+            indicatorBlockedRef.current.delete(key);
+            indicatorInFlightRef.current.delete(key);
+            indicatorErrorShownRef.current.delete(key);
+          }
+        }
+        if (indicatorDataRef.current) delete indicatorDataRef.current[id];
+        if (indicatorSeriesRef.current) delete indicatorSeriesRef.current[id];
+        if (panesRef.current) delete panesRef.current[id];
+        if (paneIndexRef.current) delete paneIndexRef.current[id];
+      });
+      setTimeout(() => setIndicatorUpdateTrigger((v) => v + 1), 0);
+    }
+  }, [
+    selectedIndicator,
+    selectedCurrency?.name,
+    timeframeValue,
+    chartType,
+    fromDate,
+    toDate,
+    isFetchingCandles,
+  ]);
+
+  const toggleIndicatorVisibility = (indicator) => {
+    const currentVisible = indicatorVisibility[indicator] ?? true;
+    const newVisibility = !currentVisible;
+
+    // Apply visibility to any manually tracked series in the specific component
+    const seriesGroup = indicatorSeriesRef.current?.[indicator];
+    if (seriesGroup) {
+      Object.entries(seriesGroup).forEach(([key, series]) => {
+        if (key.startsWith("_")) return;
+        if (series && typeof series.applyOptions === "function") {
+          try {
+            series.applyOptions({ visible: newVisibility });
+          } catch (e) {
+            console.warn("Failed to hide series", e);
+          }
+        }
+      });
+      if (seriesGroup._priceLines) {
+        Object.values(seriesGroup._priceLines).forEach((line) => {
+          if (line?.applyOptions) {
+            line.applyOptions({ visible: newVisibility });
+          }
+        });
+      }
+    }
+
+    // o. Fallback and globally apply visibility to ALL series that belong to this indicator
+    if (allCreatedSeriesRef.current) {
+      allCreatedSeriesRef.current.forEach((item) => {
+        if (
+          item &&
+          item.id === indicator &&
+          item.series &&
+          typeof item.series.applyOptions === "function"
+        ) {
+          try {
+            item.series.applyOptions({ visible: newVisibility });
+          } catch (e) {}
+        }
+      });
+    }
+
+    setIndicatorVisibility((prev) => ({
+      ...prev,
+      [indicator]: newVisibility,
+    }));
+  };
+
+  //  GET PANE INDEX
+  // Instance ids look like "RSI_1747xxx_abc12" ?" extract base type for pane check
+  const getBaseTypeFromId = (instanceId) => {
+    const match = instanceId.match(/^([A-Z0-9_]+?)_\d/);
+    return match ? match[1] : instanceId;
+  };
+
+  const getPaneIndex = (indicator) => {
+    const rootId = indicator;
+
+    if (String(rootId || "").startsWith("__sandbox_pane__")) {
+      if (paneIndexRef.current[rootId] !== undefined) {
+        return paneIndexRef.current[rootId];
+      }
+
+      const currentIndices = Object.values(paneIndexRef.current);
+      const maxIndex =
+        currentIndices.length > 0 ? Math.max(...currentIndices) : 0;
+
+      const nextPane = maxIndex + 1;
+      paneIndexRef.current[rootId] = nextPane;
+      return nextPane;
+    }
+
+    const baseType = getBaseTypeFromId(rootId);
+    // overlay indicators ?' always main pane
+    if (!PANE_INDICATORS.has(baseType)) return 0;
+
+    if (paneIndexRef.current[rootId] !== undefined) {
+      return paneIndexRef.current[rootId];
+    }
+
+    // Find the maximum pane index currently in use to avoid reusing indices
+    const currentIndices = Object.values(paneIndexRef.current);
+    const maxIndex =
+      currentIndices.length > 0 ? Math.max(...currentIndices) : 0;
+
+    const nextPane = maxIndex + 1;
+    paneIndexRef.current[rootId] = nextPane;
+
+    return nextPane;
+  };
+
+  const clearIndicatorSeries = () => {
+    // Series markers are plugins on the main candle series, so they are not
+    // removed by chart.removeSeries(). Clear them before dropping the refs.
+    Object.values(indicatorSeriesRef.current || {}).forEach((group) => {
+      try {
+        group?.baseCrossMarkersPlugin?.setMarkers([]);
+      } catch (e) {}
+    });
+
+    if (allCreatedSeriesRef.current) {
+      allCreatedSeriesRef.current.forEach((item) => {
+        try {
+          chartRef.current?.removeSeries(item.series);
+        } catch (e) {}
+      });
+      allCreatedSeriesRef.current = [];
+    }
+
+    if (dummySeriesRef.current) {
+      Object.values(dummySeriesRef.current).forEach((dummy) => {
+        try {
+          chartRef.current?.removeSeries(dummy);
+        } catch (e) {}
+      });
+      dummySeriesRef.current = {};
+    }
+
+    indicatorSeriesRef.current = {};
+    indicatorDataRef.current = {};
+    latestIndicatorValuesRef.current = {};
+    fetchedIndicatorsRef.current.clear();
+    setIndicatorUpdateTrigger((v) => v + 1);
+  };
+
+  const closeAlert = () => {
+    setShowAlertForm(false);
+  };
+
+  //  ADD SERIES
+  const addSeries = (
+    indicator,
+    SeriesType,
+    options = {},
+    explicitPaneKey = null,
+  ) => {
+    if (!chartRef.current) return null;
+
+    const paneKey = explicitPaneKey || indicator;
+    const paneIndex = getPaneIndex(paneKey);
+
+    // Prevent this pane from ever collapsing automatically by adding an invisible dummy series
+    if (paneIndex !== 0 && !dummySeriesRef.current[paneIndex]) {
+      try {
+        // Use the same NEW API as addSeries: addSeries(SeriesType, options, paneIndex)
+        const dummy = chartRef.current.addSeries(
+          LineSeries,
+          {
+            visible: false,
+            autoscaleInfoProvider: () => null,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          },
+          paneIndex,
+        );
+        const firstCandleTime = Number(candlesRef.current?.[0]?.time);
+        dummy.setData([
+          {
+            time: Number.isFinite(firstCandleTime)
+              ? firstCandleTime
+              : Math.floor(Date.now() / 1000),
+            value: 0,
+          },
+        ]);
+        dummySeriesRef.current[paneIndex] = dummy;
+      } catch (err) {}
+    }
+
+    // Force visibility to match the master toggle state if it's explicitly set to false
+    const isVisible =
+      indicatorVisibility[paneKey] !== false && options.visible !== false;
+
+    const finalOptions = { ...options, visible: isVisible };
+    if (paneIndex !== 0 && !finalOptions.priceFormat) {
+      finalOptions.priceFormat = {
+        type: "custom",
+        minMove: 0.0001,
+        formatter: (price) => {
+          if (price === undefined || price === null) return "";
+          const absPrice = Math.abs(price);
+          if (absPrice >= 1e9) {
+            return price.toExponential(2);
+          }
+          if (absPrice >= 1e6) {
+            return (price / 1e6).toFixed(2) + "M";
+          }
+          return Number(price.toFixed(4)).toString();
+        },
+      };
+    }
+
+    let series;
+    try {
+      series = chartRef.current.addSeries(SeriesType, finalOptions, paneIndex);
+    } catch (e) {
+      if (!e?.message?.includes("Object is disposed")) throw e;
+      return {
+        setData: () => {},
+        update: () => {},
+        applyOptions: () => {},
+        priceScale: () => ({ applyOptions: () => {} }),
+      };
+    }
+
+    allCreatedSeriesRef.current.push({ id: paneKey, series });
+
+    if (paneIndex !== 0) {
+      try {
+        series.priceScale().applyOptions({
+          autoScale: true,
+          mode: 0, // Explicitly set Normal mode to override global Logarithmic mode
+          visible: true,
+          position: "right",
+          minimumWidth: 85,
+          scaleMargins: {
+            top: 0.1,
+            bottom: 0.1,
+          },
+        });
+      } catch (err) {
+        console.warn(
+          "Could not configure price scale for pane",
+          paneIndex,
+          err,
+        );
+      }
+    }
+
+    // o. Populate panesRef for sub-pane indicators using instanceId as key
+    if (paneIndex !== 0) {
+      const tryPopulate = () => {
+        if (!chartRef.current) return;
+        const panes = chartRef.current.panes();
+        const paneObj = panes[paneIndex];
+        if (paneObj) {
+          const div = paneObj.getHTMLElement();
+          if (div) {
+            // console.log(
+            //   "Y'Z Populating panesRef for",
+            //   indicator,
+            //   "at index",
+            //   paneIndex,
+            // );
+            const indType = selectedIndicatorRef.current?.find(
+              (ind) => ind.id === indicator,
+            )?.type;
+            panesRef.current[indicator] = {
+              chart: chartRef.current,
+              pane: paneObj,
+              div: div,
+              type: indType,
+            };
+            setIndicatorUpdateTrigger((v) => v + 1);
+            return true;
+          }
+        }
+        return false;
+      };
+
+      if (!tryPopulate()) {
+        setTimeout(tryPopulate, 100);
+      }
+    }
+
+    // o. GLOBAL DATA SANITIZATION (Optimized for performance)
+    // Protect Lightweight Charts from crashing when indicators pass null/NaN values
+    const originalSetData = series.setData.bind(series);
+    series.setData = (data) => {
+      if (!Array.isArray(data)) {
+        try {
+          return originalSetData(data);
+        } catch (e) {
+          if (!e?.message?.includes("Object is disposed")) throw e;
+          return;
+        }
+      }
+
+      const hasValidTime = (time) => {
+        if (time === undefined || time === null || time === "") return false;
+        if (typeof time === "number") return Number.isFinite(time);
+        return true;
+      };
+
+      const cleanedData = [];
+      for (let i = 0; i < data.length; i++) {
+        const d = data[i];
+        if (!d || typeof d !== "object") continue;
+        if (!hasValidTime(d.time)) continue;
+
+        // Handle Line/Histogram/Area/Baseline series
+        if ("value" in d) {
+          if (d.value === null || Number.isNaN(Number(d.value))) {
+            cleanedData.push({ time: d.time }); // Convert to whitespace gap
+          } else {
+            // Only create a new object if necessary, otherwise use as-is (but force number)
+            // To avoid object allocation, we mutate if we can, but since it's React state,
+            // we should probably avoid mutation. Creating an object is fine if we don't spread.
+            cleanedData.push({
+              time: d.time,
+              value: Number(d.value),
+              color: d.color,
+              topColor: d.topColor,
+              bottomColor: d.bottomColor,
+              lineColor: d.lineColor,
+              lineWidth: d.lineWidth,
+              close: d.close,
+              upperChannel: d.upperChannel,
+              lowerChannel: d.lowerChannel,
+              atr: d.atr,
+            });
+          }
+        }
+        // Handle Candlestick/Bar series
+        else if ("close" in d) {
+          if (d.close === null || Number.isNaN(Number(d.close))) {
+            cleanedData.push({ time: d.time });
+          } else {
+            cleanedData.push({
+              time: d.time,
+              open: d.open != null ? Number(d.open) : undefined,
+              high: d.high != null ? Number(d.high) : undefined,
+              low: d.low != null ? Number(d.low) : undefined,
+              close: Number(d.close),
+              color: d.color,
+              borderColor: d.borderColor,
+              wickColor: d.wickColor,
+            });
+          }
+        } else {
+          cleanedData.push({ ...d });
+        }
+      }
+
+      // Cleanup undefined fields without spreading
+      for (let i = 0; i < cleanedData.length; i++) {
+        const item = cleanedData[i];
+        for (const key in item) {
+          if (item[key] === undefined) delete item[key];
+        }
+      }
+
+      if (
+        cleanedData.length > 1 &&
+        cleanedData.every((item) => typeof item.time === "number")
+      ) {
+        cleanedData.sort((a, b) => a.time - b.time);
+      }
+
+      try {
+        return originalSetData(cleanedData);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) {
+          throw e;
+        }
+      }
+    };
+
+    const originalUpdate = series.update.bind(series);
+    series.update = (data) => {
+      try {
+        return originalUpdate(data);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) {
+          throw e;
+        }
+      }
+    };
+
+    const originalApplyOptions = series.applyOptions.bind(series);
+    series.applyOptions = (options) => {
+      try {
+        return originalApplyOptions(options);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) {
+          throw e;
+        }
+      }
+    };
+
+    return series;
+  };
+
+  //  o. CHART SYNC ENGINE
+  function syncCharts(sourceChart, logicalRange) {
+    if (!logicalRange || syncingRef.current) return;
+    syncingRef.current = true;
+    const charts = [
+      chartRef.current,
+      ...Object.values(panesRef.current)?.map((p) => p.chart),
+    ];
+
+    charts.forEach((chart) => {
+      if (!chart || chart === sourceChart) return;
+      try {
+        chart.timeScale().setVisibleLogicalRange(logicalRange);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) throw e;
+      }
+    });
+    syncingRef.current = false;
+  }
+  function attachSync(chart) {
+    if (!chart) return;
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || syncingRef.current) return;
+      syncCharts(chart, range);
+    });
+  }
+
+  //  o. INDICATOR REMOVAL ?" accepts instance id
+  const removeOrphanedIndicatorSeries = useCallback((instanceId) => {
+    const currentGroup = indicatorSeriesRef.current?.[instanceId] || {};
+    const currentSeries = new Set(
+      Object.values(currentGroup).filter((series) => series?.setData),
+    );
+
+    allCreatedSeriesRef.current = allCreatedSeriesRef.current.filter((entry) => {
+      if (entry?.id !== instanceId || currentSeries.has(entry?.series)) {
+        return true;
+      }
+
+      try {
+        chartRef.current?.removeSeries(entry.series);
+      } catch {}
+      return false;
+    });
+  }, []);
+
+  const removeIndicator = useCallback(
+    (instanceId) => {
+      const activeIndicators = selectedIndicatorRef.current || [];
+      const removedIndicator = activeIndicators.find(
+        (indicator) => indicator?.id === instanceId,
+      );
+      const remainingIndicators = activeIndicators.filter(
+        (indicator) => indicator?.id !== instanceId,
+      );
+
+      // Update the ref immediately so the next live tick cannot request this
+      // indicator while React is waiting to apply the state update.
+      selectedIndicatorRef.current = remainingIndicators;
+      setSelectedIndicator(remainingIndicators);
+
+      const removedType = removedIndicator?.type;
+
+      if (removedType) {
+        const unsubscribePayload = {
+          symbol: selectedCurrency?.name,
+          interval: timeframeValue,
+          type: removedType,
+          requestId: instanceId,
+          exchange: selectedCurrency?.segment,
+        };
+        console.log(
+          "[INDICATOR] unsubscribeIndicator payload:",
+          unsubscribePayload,
+        );
+        emitRef.current?.(
+          EVENTS.INDICATOR.LIVE_UNSUBSCRIBE,
+          unsubscribePayload,
+        );
+      }
+
+      const entry = indicatorSeriesRef.current[instanceId];
+      entry?.baseCrossMarkersPlugin?.setMarkers([]);
+      if (!entry) return;
+
+      const paneKey = instanceId; // each instance has its own pane key
+      const pane = panesRef.current[paneKey];
+      const chart = pane?.chart ?? chartRef.current;
+      if (!chart) return;
+
+      const panesCountBefore =
+        typeof chart.panes === "function" ? chart.panes().length : 0;
+
+      // Use global series tracking to remove ALL series associated with this indicator
+      if (allCreatedSeriesRef.current) {
+        allCreatedSeriesRef.current = allCreatedSeriesRef.current.filter(
+          (item) => {
+            if (item.id === instanceId) {
+              try {
+                chart.removeSeries(item.series);
+              } catch (e) {}
+              return false;
+            }
+            return true;
+          },
+        );
+      }
+
+      const panesCountAfter =
+        typeof chart.panes === "function" ? chart.panes().length : 0;
+
+      const rootId = instanceId;
+      const paneIndex = paneIndexRef.current[rootId];
+
+      if (paneIndex !== undefined && paneIndex !== 0) {
+        if (panesCountAfter === panesCountBefore) {
+          // First remove the dummy series for this pane (so the pane becomes empty & auto-collapses)
+          const dummy = dummySeriesRef.current[paneIndex];
+          if (dummy) {
+            try {
+              chart.removeSeries(dummy);
+            } catch (e) {}
+            delete dummySeriesRef.current[paneIndex];
+          }
+
+          const panesCountAfterDummy =
+            typeof chart.panes === "function" ? chart.panes().length : 0;
+
+          if (panesCountAfterDummy === panesCountBefore) {
+            // Lightweight charts STILL didn't auto-remove it, so we manually remove it
+            try {
+              const currentPanes =
+                typeof chart.panes === "function" ? chart.panes() : [];
+              if (
+                typeof chart.removePane === "function" &&
+                Number.isInteger(paneIndex) &&
+                paneIndex > 0 &&
+                paneIndex < currentPanes.length
+              ) {
+                chart.removePane(paneIndex);
+              }
+            } catch (err) {
+              console.warn("Failed to remove pane explicitly", err);
+            }
+          }
+        } else {
+          // Pane auto-removed ?" still need to clear the stale dummy ref
+          delete dummySeriesRef.current[paneIndex];
+        }
+      }
+
+      // ALWAYS shift paneIndexRef AND dummySeriesRef for all indicators whose index is above the removed pane.
+      // This must happen regardless of auto-remove vs manual-remove, because in both
+      // cases, LightweightCharts renumbers all subsequent panes by -1.
+      if (paneIndex !== undefined && paneIndex !== 0) {
+        Object.keys(paneIndexRef.current).forEach((key) => {
+          if (key !== rootId && paneIndexRef.current[key] > paneIndex) {
+            paneIndexRef.current[key] -= 1;
+          }
+        });
+        // Shift dummy series indices down too
+        const newDummyRef = {};
+        Object.keys(dummySeriesRef.current).forEach((k) => {
+          const ki = Number(k);
+          if (ki > paneIndex) {
+            newDummyRef[ki - 1] = dummySeriesRef.current[k];
+          } else {
+            newDummyRef[ki] = dummySeriesRef.current[k];
+          }
+        });
+        dummySeriesRef.current = newDummyRef;
+      }
+
+      delete indicatorSeriesRef.current[instanceId];
+      delete latestIndicatorValuesRef.current[instanceId];
+      fetchedIndicatorsRef.current.delete(instanceId);
+      delete paneIndexRef.current[rootId];
+
+      // the DOM pane cleanup
+      delete panesRef.current[paneKey];
+    },
+    [selectedCurrency?.name, selectedCurrency?.segment, timeframeValue],
+  );
+  // ----------Main chart------------
+  useEffect(() => {
+    chartDisposedRef.current = false;
+    if (!containerRef.current) return;
+    if (chartRef.current) return; // Prevent recreating the chart on every render
+
+    const chart = throttleChartEvents(
+      createChart(containerRef.current, {
+        ...ChartProprties,
+      }),
+    );
+
+    // Auto-cleanup our global refs whenever ANY series is physically removed
+    const originalRemoveSeries = chart.removeSeries.bind(chart);
+    chart.removeSeries = (series) => {
+      if (allCreatedSeriesRef.current) {
+        allCreatedSeriesRef.current = allCreatedSeriesRef.current.filter(
+          (item) => item.series !== series,
+        );
+      }
+      try {
+        originalRemoveSeries(series);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) throw e;
+      }
+    };
+
+    const origSub = chart.subscribeCrosshairMove.bind(chart);
+    chart.subscribeCrosshairMove = (handler) => {
+      try {
+        origSub(handler);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) throw e;
+      }
+    };
+
+    const origUnsub = chart.unsubscribeCrosshairMove.bind(chart);
+    chart.unsubscribeCrosshairMove = (handler) => {
+      try {
+        origUnsub(handler);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) throw e;
+      }
+    };
+
+    const origSetCrosshair = chart.setCrosshairPosition.bind(chart);
+    chart.setCrosshairPosition = (...args) => {
+      try {
+        origSetCrosshair(...args);
+      } catch (e) {
+        if (!e?.message?.includes("Object is disposed")) throw e;
+      }
+    };
+
+    const origTimeScale = chart.timeScale.bind(chart);
+    chart.timeScale = () => {
+      const ts = origTimeScale();
+      if (!ts.__patched) {
+        ts.__patched = true;
+        const methods = [
+          "getVisibleLogicalRange",
+          "setVisibleLogicalRange",
+          "getVisibleRange",
+          "setVisibleRange",
+          "fitContent",
+          "scrollToRealTime",
+          "scrollToPosition",
+          "timeToCoordinate",
+          "coordinateToTime",
+          "subscribeVisibleTimeRangeChange",
+          "unsubscribeVisibleTimeRangeChange",
+          "subscribeVisibleLogicalRangeChange",
+          "unsubscribeVisibleLogicalRangeChange",
+        ];
+        methods.forEach((method) => {
+          if (typeof ts[method] === "function") {
+            const origMethod = ts[method].bind(ts);
+            ts[method] = (...args) => {
+              try {
+                return origMethod(...args);
+              } catch (e) {
+                if (!e?.message?.includes("Object is disposed")) throw e;
+                return null;
+              }
+            };
+          }
+        });
+      }
+      return ts;
+    };
+
+    const origPriceScale = chart.priceScale.bind(chart);
+    chart.priceScale = (id) => {
+      const ps = origPriceScale(id);
+      if (!ps.__patched) {
+        ps.__patched = true;
+        const methods = ["applyOptions", "options", "width"];
+        methods.forEach((method) => {
+          if (typeof ps[method] === "function") {
+            const origMethod = ps[method].bind(ps);
+            ps[method] = (...args) => {
+              try {
+                return origMethod(...args);
+              } catch (e) {
+                if (!e?.message?.includes("Object is disposed")) throw e;
+                return null;
+              }
+            };
+          }
+        });
+      }
+      return ps;
+    };
+
+    const applyChartCanvasTheme = () => {
+      const theme =
+        document.documentElement.getAttribute("data-theme") || "dark";
+      chart.applyOptions({
+        layout: {
+          background: {
+            type: "solid",
+            color: theme === "light" ? "#ffffff" : "#000000",
+          },
+        },
+      });
+    };
+
+    applyChartCanvasTheme();
+    const themeObserver = new MutationObserver(applyChartCanvasTheme);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+
+    chartRef.current = chart;
+    attachSync(chart);
+
+    return () => {
+      themeObserver.disconnect();
+      pendingGotoRef.current = null;
+      chartDisposedRef.current = true;
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
+      seriesRef.current = null;
+      seriesReadyRef.current = false;
+      customScriptMarkersRef.current = null;
+      strategyMarkersRef.current = null;
+      customScriptBarColorsAppliedRef.current = false;
+    };
+  }, []); // Run only once
+
+  // kept for compatibility ?" ListingModal now directly calls setSelectedIndicator
+  const toggleIndicator = useCallback((type) => {
+    const id = `${type}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const newInst = { id, type };
+
+    // Initialize instance-specific config from defaults
+    setIndicatorConfigs((prev) => ({
+      ...prev,
+      [id]: { ...indicatorConfigDefault[type] },
+    }));
+
+    setSelectedIndicator((prev) => [...prev, newInst]);
+  }, []);
+
+  // RENDER INDICATOR VALUE
+
+  const renderValue = (id, type, value) => {
+    const emptySymbol = "F";
+    const showPercent = type === "AROON";
+
+    const toFullOpacity = (c) => {
+      if (!c || typeof c !== "string") return c;
+      if (c.startsWith("rgba")) {
+        return c.replace(/,\s*[\d.]+\s*\)/, ", 1)");
+      }
+      if (c.startsWith("#") && c.length === 9) {
+        return c.substring(0, 7);
+      }
+      return c;
+    };
+
+    let keysToShow = null;
+    let isSingleValue = false;
+
+    const group = indicatorSeriesRef.current?.[id];
+    if (group && typeof group === "object" && !group.priceScale) {
+      // It's a grouped multi-series indicator. Extract keys that map to actual Lightweight Charts series
+      const seriesKeys = Object.keys(group).filter(
+        (k) => group[k] && typeof group[k].setData === "function",
+      );
+      if (seriesKeys.length > 0) {
+        keysToShow = seriesKeys;
+      } else {
+        isSingleValue = true;
+      }
+    } else if (value && typeof value === "object") {
+      keysToShow = Object.keys(value);
+    } else {
+      isSingleValue = true;
+    }
+
+    if (isSingleValue) {
+      const style =
+        indicatorStyle?.[id]?.sma ||
+        indicatorStyle?.[id]?.ma ||
+        indicatorStyle?.[id]?.[type?.toLowerCase()] ||
+        indicatorStyle?.[type]?.sma ||
+        indicatorStyle?.[type]?.ma ||
+        indicatorStyle?.[type]?.[type?.toLowerCase()];
+      if (style?.visible === false) return null;
+      let color = style?.color;
+
+      const val =
+        value != null
+          ? typeof value === "object"
+            ? Object.values(value)[0]
+            : value
+          : null;
+
+      const group = indicatorSeriesRef.current?.[id];
+      if (group) {
+        if (typeof group.options === "function") {
+          const opts = group.options();
+          color =
+            opts.color ||
+            opts.lineColor ||
+            opts.topColor ||
+            opts.topLineColor ||
+            color;
+          if (opts.topLineColor && opts.bottomLineColor && val != null) {
+            const baseVal = opts.baseValue?.price ?? 0;
+            color =
+              Number(val) < baseVal ? opts.bottomLineColor : opts.topLineColor;
+          }
+        } else {
+          const seriesKey = Object.keys(group).find(
+            (k) => typeof group[k]?.options === "function",
+          );
+          if (seriesKey) {
+            const opts = group[seriesKey].options();
+            color =
+              opts.color ||
+              opts.lineColor ||
+              opts.topColor ||
+              opts.topLineColor ||
+              color;
+            if (opts.topLineColor && opts.bottomLineColor && val != null) {
+              const baseVal = opts.baseValue?.price ?? 0;
+              color =
+                Number(val) < baseVal
+                  ? opts.bottomLineColor
+                  : opts.topLineColor;
+            }
+          }
+        }
+      }
+      color = toFullOpacity(color || "#333");
+      return (
+        <span
+          id={`indicator-val-${id}-main`}
+          style={{ color }}
+          data-default-color={color}
+          title={type}
+          data-type={type}
+        >
+          {val != null && Number.isFinite(Number(val))
+            ? Number(val).toFixed(2)
+            : emptySymbol}
+          {val != null && showPercent ? "%" : ""}
+        </span>
+      );
+    }
+
+    if (keysToShow) {
+      const hiddenKeys = [
+        "upperRSI",
+        "middleRSI",
+        "lowerRSI",
+        "middleBand",
+        "lowerBand",
+        "upperBand",
+        "zero",
+        "bgFill",
+        "bg",
+        "zeroLine",
+        "bandBackground",
+        "overboughtFill",
+        "oversoldFill",
+        "lowerLevel",
+        "upperLevel",
+        "center",
+        "oscillatorFill",
+        "bbLowerBand",
+        "bbUperBand",
+        "_bg",
+      ];
+
+      return keysToShow
+        .filter((key) => {
+          if (hiddenKeys.includes(key)) return false;
+
+          const config = indicatorConfigs[id] || indicatorConfigDefault[type];
+          const normalizedMaType = String(
+            config?.maType ?? config?.matype ?? config?.ma_type ?? "",
+          )
+            .trim()
+            .toLowerCase();
+
+          // Do not render values for MA-dependent lines when that MA is not plotted.
+          if (
+            normalizedMaType === "none" &&
+            ["smoothingMA", "bbUpper", "bbLower"].includes(key)
+          ) {
+            return false;
+          }
+          if (
+            ["bbUpper", "bbLower"].includes(key) &&
+            normalizedMaType !== "sma + bollinger bands"
+          ) {
+            return false;
+          }
+
+          const style =
+            indicatorStyle?.[id]?.[key] || indicatorStyle?.[type]?.[key];
+          if (style?.visible === false) return false;
+
+          // A line with an empty plotted data set is not shown in the legend.
+          const plottedData = group?.result?.data?.[key];
+          if (Array.isArray(plottedData) && plottedData.length === 0) {
+            return false;
+          }
+
+          // Return true even if the current crosshair value is null.
+          return true;
+        })
+        .map((key) => {
+          const val = value ? value[key] : null;
+          let color =
+            indicatorStyle?.[id]?.[key]?.color ||
+            indicatorStyle?.[type]?.[key]?.color;
+
+          // Dynamically read exact color from the plotted series to guarantee accuracy
+          const group = indicatorSeriesRef.current?.[id];
+          if (group && group[key] && typeof group[key].options === "function") {
+            const opts = group[key].options();
+            color =
+              opts.color ||
+              opts.lineColor ||
+              opts.topColor ||
+              opts.topLineColor ||
+              color;
+            if (opts.topLineColor && opts.bottomLineColor && val != null) {
+              const baseVal = opts.baseValue?.price ?? 0;
+              color =
+                Number(val) < baseVal
+                  ? opts.bottomLineColor
+                  : opts.topLineColor;
+            }
+          }
+
+          color = toFullOpacity(color || "#333");
+
+          return (
+            <span
+              id={`indicator-val-${id}-${key}`}
+              key={key}
+              style={{ marginRight: 8, color }}
+              data-default-color={color}
+              title={key}
+              data-type={type}
+            >
+              {val != null && Number.isFinite(Number(val))
+                ? `${Number(val).toFixed(2)}${showPercent ? "%" : ""}`
+                : emptySymbol}
+            </span>
+          );
+        });
+    }
+
+    return emptySymbol;
+  };
+
+  const handleToggleAgentPanel = useCallback(() => {
+    setIsAgentPanelOpen((prev) => {
+      const nextOpen = !prev;
+      if (nextOpen) {
+        setIsCodeEditorOpen(false);
+      }
+      return nextOpen;
+    });
+  }, []);
+
+  const handleApplyAgentCode = useCallback((message) => {
+    if (!message?.code) return;
+    setEditorCode(message.code);
+    setIsStrategyDirty(true);
+    setIsDeployed(false);
+    setIsAgentPanelOpen(false);
+    setIsCodeEditorOpen(true);
+    toast.success("Agent code applied to the editor.");
+  }, []);
+
+  const handleClearAgentChat = useCallback(() => {
+    setAgentMessages([]);
+    setAgentDraft("");
+  }, []);
+
+  const handleSendAgentMessage = useCallback(
+    async (promptText) => {
+      const prompt = String(promptText || "").trim();
+      if (!prompt || isAgentLoading) return;
+
+      const currentUser = getUser();
+      const userId = currentUser?.id || currentUser?._id || "123";
+
+      setAgentMessages((prev) => [...prev, createAgentMessage("user", prompt)]);
+      setAgentDraft("");
+      setIsAgentLoading(true);
+
+      try {
+        const response = await generateStrategyAgent({
+          prompt,
+          session_id: strategyAgentSessionIdRef.current,
+          user_id: userId,
+          current_file_path: "strategy.py",
+          current_editor_code: editorCode,
+          open_files: [
+            {
+              path: "strategy.py",
+              content: editorCode || "",
+            },
+          ],
+          project_summary:
+            "ChartLab strategy workspace for chart-driven code generation and iteration.",
+          timeframe: timeframeValue,
+          market: selectedCurrency?.symbol || selectedCurrency?.name,
+          constraints: [
+            "Be concise and actionable.",
+            "When returning code, keep it runnable in ChartLab Python.",
+            "Mention strategy assumptions when they materially affect the result.",
+          ],
+        });
+
+        if (response?.session_id) {
+          strategyAgentSessionIdRef.current = response.session_id;
+        }
+
+        const replyText =
+          response?.reply ||
+          response?.message ||
+          "The strategy agent did not return a response.";
+        const generatedCode =
+          typeof response?.code === "string" && response.code.trim()
+            ? response.code.trim()
+            : "";
+
+        setAgentMessages((prev) => [
+          ...prev,
+          createAgentMessage("assistant", repairMojibake(replyText), {
+            code: generatedCode || undefined,
+            replaceEditorCode: response?.replace_editor_code === true,
+          }),
+        ]);
+      } catch (error) {
+        console.error("Strategy agent chat failed:", error);
+        const errorMessage =
+          error?.response?.data?.detail ||
+          error?.response?.data?.message ||
+          error?.message ||
+          "Unable to reach the strategy agent right now.";
+
+        setAgentMessages((prev) => [
+          ...prev,
+          createAgentMessage("assistant", repairMojibake(errorMessage)),
+        ]);
+        toast.error("Strategy agent request failed.");
+      } finally {
+        setIsAgentLoading(false);
+      }
+    },
+    [editorCode, isAgentLoading, selectedCurrency, timeframeValue],
+  );
+
+  const renderSandboxLegend = (group) => {
+    if (!group || !Array.isArray(group.items) || group.items.length === 0) {
+      return null;
+    }
+
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+          fontSize: 13,
+          fontWeight: 500,
+          color: "var(--text-primary)",
+          padding: "2px 6px",
+          borderRadius: 4,
+          background: "rgba(0, 0, 0, 0.14)",
+          backdropFilter: "blur(2px)",
+        }}
+      >
+        <span style={{ color: "var(--text-secondary)" }}>{group.title}</span>
+        {group.items.map((item) => (
+          <span
+            key={item.id}
+            id={getSandboxLegendDomId(group.paneKey, item.id)}
+            style={{
+              color: item.color || "#3b82f6",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.label}:{" "}
+            {item.value != null && Number.isFinite(Number(item.value))
+              ? Number(item.value).toFixed(2)
+              : "--"}
+          </span>
+        ))}
+      </div>
+    );
+  };
+
+  const renderIndicators = () => {
+    return selectedIndicator?.map((ind) => {
+      const { id, type } = ind;
+      const Component = indicatorComponents[type];
+      if (!Component) return null;
+
+      const data = indicatorDataRef.current?.[id];
+      if (!data) return null; // Defer render until data is loaded to prevent empty pane
+
+      // Scoped proxy: plot components write indicatorSeriesRef.current[type]
+      // but we remap it to indicatorSeriesRef.current[id] so each instance is independent
+      const scopedSeriesRef = {
+        current: new Proxy(indicatorSeriesRef.current, {
+          get(target, prop) {
+            if (prop === type) return target[id];
+            return target[prop];
+          },
+          set(target, prop, value) {
+            if (prop === type) {
+              target[id] = value;
+              setTimeout(() => setIndicatorUpdateTrigger((v) => v + 1), 0);
+            } else {
+              target[prop] = value;
+            }
+            return true;
+          },
+        }),
+      };
+
+      // Scoped indicatorStyle: plot components read indicatorStyle[type] (e.g. indicatorStyle.RSI)
+      // but we remap to the instance's id-keyed style so each instance is visually independent
+      const scopedIndicatorStyle = new Proxy(indicatorStyle, {
+        get(target, prop) {
+          if (prop === type || prop === id) {
+            // instance-specific style takes priority; fall back to type default
+            const baseStyle = target[id] ?? target[type];
+
+            // Force visible: false deeply if the master toggle is off
+            if (indicatorVisibility[id] === false && baseStyle) {
+              const overrideStyle = JSON.parse(JSON.stringify(baseStyle));
+              const forceVisibleFalse = (obj) => {
+                for (let k in obj) {
+                  if (typeof obj[k] === "object" && obj[k] !== null) {
+                    forceVisibleFalse(obj[k]);
+                  } else if (k === "visible") {
+                    obj[k] = false;
+                  }
+                }
+                // also force root level properties if any sub-components use them directly
+                if (!obj.hasOwnProperty("visible")) {
+                  obj.visible = false;
+                }
+              };
+              forceVisibleFalse(overrideStyle);
+              return overrideStyle;
+            }
+
+            return baseStyle;
+          }
+          return target[prop];
+        },
+      });
+
+      // Scoped addSeries: routes pane creation under the instance id
+      const scopedAddSeries = (indicatorKey, SeriesType, options = {}) => {
+        return addSeries(id, SeriesType, options);
+      };
+
+      const scopedRemoveSeries = (series) => {
+        try {
+          chartRef.current?.removeSeries(series);
+        } catch (e) {}
+      };
+
+      return (
+        <Component
+          key={id}
+          id={id}
+          result={data?.result}
+          rows={data?.rows}
+          indicatorStyle={scopedIndicatorStyle}
+          indicatorSeriesRef={scopedSeriesRef}
+          addSeries={scopedAddSeries}
+          removeSeries={scopedRemoveSeries}
+          indicatorVisibility={indicatorVisibility}
+          containerRef={containerRef.current}
+          chart={chartRef.current}
+          container={containerRef}
+          panesRef={panesRef}
+          indicatorConfigs={indicatorConfigs}
+          pane={seriesRef.current}
+          mainSeriesRef={seriesRef}
+          candlesRef={candlesRef}
+          timeframeValue={timeframeValue}
+          selectedCurrency={selectedCurrency}
+        />
+      );
+    });
+  };
+
+  // SYNC CROSSHAIR
+  const lastIndicatorUpdateRef = useRef(0);
+
+  const updateSandboxLegendValues = useCallback((param) => {
+    const legendGroups = sandboxLegendGroupsRef.current || {};
+
+    Object.values(legendGroups).forEach((group) => {
+      if (!group?.items?.length) return;
+
+      group.items.forEach((item) => {
+        const el = document.getElementById(
+          getSandboxLegendDomId(group.paneKey, item.id),
+        );
+        if (!el) return;
+
+        let nextValue = item.value;
+        let nextColor = item.color;
+        const hovered = param?.seriesData?.get?.(item.series);
+
+        if (hovered !== undefined) {
+          if (typeof hovered === "number") {
+            nextValue = hovered;
+          } else if (hovered && typeof hovered === "object") {
+            if (Number.isFinite(Number(hovered.value))) {
+              nextValue = Number(hovered.value);
+            } else if (Number.isFinite(Number(hovered.close))) {
+              nextValue = Number(hovered.close);
+            }
+            nextColor =
+              hovered.color ||
+              hovered.lineColor ||
+              hovered.topColor ||
+              hovered.borderColor ||
+              nextColor;
+          }
+        }
+
+        el.textContent = `${item.label}: ${
+          nextValue != null && Number.isFinite(Number(nextValue))
+            ? Number(nextValue).toFixed(2)
+            : "--"
+        }`;
+        if (nextColor) {
+          el.style.color = nextColor;
+        }
+      });
+    });
+  }, []);
+
+  const updateIndicatorValues = (param) => {
+    const now = Date.now();
+    if (now - lastIndicatorUpdateRef.current < 50) return;
+
+    Object.entries(indicatorSeriesRef.current).forEach(([indicator, group]) => {
+      if (!group) return;
+
+      const indicatorValues = {};
+      Object.entries(group).forEach(([lineName, series]) => {
+        if (!series || typeof series.setData !== "function") return;
+
+        const price = param.seriesData?.get(series);
+        if (price !== undefined) {
+          indicatorValues[lineName] = {
+            value: typeof price === "object" ? price.value : price,
+            color:
+              typeof price === "object" && price.color ? price.color : null,
+          };
+        }
+      });
+
+      const keys = Object.keys(indicatorValues);
+      Object.entries(indicatorValues).forEach(([key, dataObj]) => {
+        const val = dataObj.value;
+        const dynamicColor = dataObj.color;
+        let el = document.getElementById(`indicator-val-${indicator}-${key}`);
+
+        // Fallback for single-value indicators which render under the '-main' ID
+        if (!el && keys.length === 1) {
+          el = document.getElementById(`indicator-val-${indicator}-main`);
+        }
+
+        if (el) {
+          const isAroon = el.getAttribute("data-type") === "AROON";
+          el.textContent = Number.isFinite(val)
+            ? `${Number(val).toFixed(2)}${isAroon ? "%" : ""}`
+            : "F";
+          if (dynamicColor) {
+            el.style.color = dynamicColor;
+          } else {
+            const defaultColor = el.getAttribute("data-default-color");
+            if (defaultColor) el.style.color = defaultColor;
+          }
+        }
+      });
+    });
+
+    lastIndicatorUpdateRef.current = now;
+    // We no longer trigger a full React re-render of CandleStick by calling setLiveIndicatorData(updates)
+  };
+  // ATTACH CROSSHAIR
+
+  const attachCrosshair = useCallback(
+    (chart) => {
+      if (!chart) return () => {};
+      const handler = (param) => {
+        const charts = [
+          chartRef.current,
+          ...Object.values(panesRef.current)?.map((p) => p.chart),
+        ].filter(Boolean);
+
+        // clear crosshair if invalid
+        if (!param?.point || param.time === undefined) {
+          crosshairActiveRef.current = false;
+          charts.forEach((c) => c.clearCrosshairPosition?.());
+          restoreLiveHeader();
+          // Since we bypassed React state for live indicators, we need to show the last available data if crosshair leaves
+          Object.keys(indicatorSeriesRef.current).forEach((indicator) => {
+            const mainEl = document.getElementById(
+              `indicator-val-${indicator}-main`,
+            );
+            const group = indicatorSeriesRef.current[indicator];
+
+            if (mainEl) {
+              let val = null;
+              if (group) {
+                const seriesKey = Object.keys(group).find(
+                  (k) => group[k] && typeof group[k].data === "function",
+                );
+                if (seriesKey) {
+                  const dataArr = group[seriesKey].data();
+                  if (dataArr && dataArr.length > 0) {
+                    const lastData = dataArr[dataArr.length - 1];
+                    val =
+                      lastData.value !== undefined
+                        ? lastData.value
+                        : lastData.close;
+                    if (lastData.color) {
+                      mainEl.style.color = lastData.color;
+                    } else {
+                      const defaultColor =
+                        mainEl.getAttribute("data-default-color");
+                      if (defaultColor) mainEl.style.color = defaultColor;
+                    }
+                  }
+                }
+              }
+              const isAroon = mainEl.getAttribute("data-type") === "AROON";
+              mainEl.textContent =
+                val != null && Number.isFinite(Number(val))
+                  ? `${Number(val).toFixed(2)}${isAroon ? "%" : ""}`
+                  : "F";
+            } else if (group) {
+              Object.keys(group).forEach((key) => {
+                const el = document.getElementById(
+                  `indicator-val-${indicator}-${key}`,
+                );
+                const series = group[key];
+                if (el && series && typeof series.data === "function") {
+                  const dataArr = series.data();
+                  if (dataArr && dataArr.length > 0) {
+                    const lastData = dataArr[dataArr.length - 1];
+                    let val =
+                      lastData.value !== undefined
+                        ? lastData.value
+                        : lastData.close;
+                    const isAroon = el.getAttribute("data-type") === "AROON";
+                    el.textContent =
+                      val != null && Number.isFinite(Number(val))
+                        ? `${Number(val).toFixed(2)}${isAroon ? "%" : ""}`
+                        : "F";
+                    if (lastData.color) {
+                      el.style.color = lastData.color;
+                    } else {
+                      const defaultColor =
+                        el.getAttribute("data-default-color");
+                      if (defaultColor) el.style.color = defaultColor;
+                    }
+                  } else {
+                    el.textContent = "F";
+                  }
+                }
+              });
+            }
+          });
+          updateSandboxLegendValues(null);
+          return;
+        }
+
+        crosshairActiveRef.current = true;
+
+        // sync crosshair
+        charts.forEach((c) => {
+          try {
+            c.setCrosshairPosition(
+              param.point?.x ?? 0,
+              param.point?.y ?? 0,
+              param.time,
+            );
+          } catch (e) {
+            if (!e?.message?.includes("Object is disposed")) console.warn(e);
+          }
+        });
+
+        // update candles
+        const candle = param.seriesData?.get(seriesRef.current);
+        if (
+          chartTypeRef.current === "line" &&
+          candle?.value != null &&
+          ohlcvDisplayRef.current
+        ) {
+          const value = Number(candle.value);
+          if (Number.isFinite(value)) {
+            const el = ohlcvDisplayRef.current;
+            const o = el.querySelector("[data-o]");
+            if (o) o.textContent = value.toFixed(2);
+            el.querySelectorAll("[data-val]").forEach(
+              (span) => (span.style.color = "#2962ff"),
+            );
+          }
+        } else if (candle && ohlcvDisplayRef.current) {
+          const el = ohlcvDisplayRef.current;
+          const isUp = candle.close >= candle.open;
+          const color = isUp ? "#22c55e" : "#ef4444";
+          const o = el.querySelector("[data-o]");
+          const h = el.querySelector("[data-h]");
+          const l = el.querySelector("[data-l]");
+          const c = el.querySelector("[data-c]");
+          if (o) o.textContent = Number(candle.open).toFixed(2);
+          if (h) h.textContent = Number(candle.high).toFixed(2);
+          if (l) l.textContent = Number(candle.low).toFixed(2);
+          if (c) c.textContent = Number(candle.close).toFixed(2);
+          el.querySelectorAll("[data-val]").forEach(
+            (s) => (s.style.color = color),
+          );
+        }
+        // update indicators
+        updateIndicatorValues(param);
+        updateSandboxLegendValues(param);
+      };
+
+      try {
+        chart.subscribeCrosshairMove(handler);
+      } catch (e) {}
+
+      return () => {
+        try {
+          chart.unsubscribeCrosshairMove?.(handler);
+        } catch (e) {}
+      };
+    },
+    [updateSandboxLegendValues],
+  );
+
+  const { fetchIndicatorData } = useChartFunctions({
+    indicatorSeriesRef,
+    indicatorDataRef,
+    latestIndicatorValuesRef,
+    indicatorConfigs,
+    fromDate,
+    toDate,
+    socketRef,
+    candlesRef,
+    onIndicatorLoaded: () => {
+      setIndicatorUpdateTrigger((v) => v + 1);
+    },
+  });
+
+  const getIndicatorRequestKey = useCallback(
+    (indicator, currency, timeframe) => {
+      const type = typeof indicator === "object" ? indicator?.type : indicator;
+      const symbol = currency?.symbol || currency?.name || "";
+      return [
+        String(symbol).toUpperCase(),
+        timeframe || "",
+        String(type || "").toUpperCase(),
+      ].join("|");
+    },
+    [],
+  );
+
+  const safeFetchIndicatorData = useCallback(
+    async (indicators, currency, timeframe, customFromDate, customToDate) => {
+      if (!Array.isArray(indicators) || indicators.length === 0) return;
+      const allowed = indicators.filter((indicator) => {
+        const key = getIndicatorRequestKey(indicator, currency, timeframe);
+        return (
+          !indicatorBlockedRef.current.has(key) &&
+          !indicatorInFlightRef.current.has(key)
+        );
+      });
+      if (!allowed.length) return;
+      const keys = allowed.map((indicator) =>
+        getIndicatorRequestKey(indicator, currency, timeframe),
+      );
+      keys.forEach((key) => indicatorInFlightRef.current.add(key));
+      try {
+        const result = await fetchIndicatorData(
+          allowed,
+          currency,
+          timeframe,
+          customFromDate,
+          customToDate,
+        );
+        return result;
+      } catch (error) {
+        allowed.forEach((indicator) => {
+          const key = getIndicatorRequestKey(indicator, currency, timeframe);
+          const count = (indicatorFailureCountRef.current.get(key) || 0) + 1;
+          indicatorFailureCountRef.current.set(key, count);
+          if (count >= MAX_INDICATOR_FAILURES) {
+            indicatorBlockedRef.current.add(key);
+            fetchedIndicatorsRef.current.add(indicator.id);
+            if (!indicatorErrorShownRef.current.has(key)) {
+              indicatorErrorShownRef.current.add(key);
+              Swal.fire({
+                icon: "error",
+                title: "Indicator Error",
+                text: `${indicator?.type || indicator?.name || "This indicator"} could not be loaded. `,
+                background: "var(--bg-secondary)",
+                color: "var(--text-primary)",
+              });
+            }
+          }
+        });
+        return null;
+      } finally {
+        keys.forEach((key) => indicatorInFlightRef.current.delete(key));
+      }
+    },
+    [fetchIndicatorData, getIndicatorRequestKey],
+  );
+  // ATTACH MAIN CHART
+
+  useEffect(() => {
+    // Reattach crosshair whenever series references change
+    const charts = [
+      chartRef.current,
+      ...Object.values(panesRef.current).map((p) => p.chart),
+    ].filter(Boolean);
+    const detachHandlers = charts?.map((c) => attachCrosshair(c));
+
+    return () => detachHandlers.forEach((d) => d());
+  }, [indicatorSeriesRef.current, timeframeValue]);
+
+  // Define dynamic vars used by handlers
+  const intervalSec = TIMEFRAME_TO_SECONDS[timeframeValue];
+
+  const emitRef = useRef(null);
+
+  const requestHistoricalData = useCallback(
+    (force = false, overrides = {}, options = {}) => {
+      if (!selectedCurrency || !timeframeValue) return;
+      setNoDataAvailable(false);
+      const requestedFromDate = overrides.fromDate || fromDate;
+      const requestedToDate = overrides.toDate || toDate;
+      const requestedFromDay = String(requestedFromDate).split("T")[0];
+      const requestedToDay = String(requestedToDate).split("T")[0];
+
+      // The backend has no data before this date. Guard the shared request
+      // entry point so neither scrolling nor any other chart action can emit
+      // an out-of-range historical request.
+      if (requestedToDay < MIN_HISTORICAL_DATE) return false;
+
+      const historicalPayloadBase = {
+        symbol: selectedCurrency?.name || selectedCurrency?.symbol,
+        interval: timeframeValue,
+        fromDate:
+          requestedFromDay < MIN_HISTORICAL_DATE
+            ? MIN_HISTORICAL_DATE
+            : requestedFromDate,
+        toDate: requestedToDate,
+        ...overrides,
+      };
+      historicalPayloadBase.fromDate =
+        String(historicalPayloadBase.fromDate).split("T")[0] <
+        MIN_HISTORICAL_DATE
+          ? MIN_HISTORICAL_DATE
+          : historicalPayloadBase.fromDate;
+      const requestKey = JSON.stringify(historicalPayloadBase);
+      const now = Date.now();
+      if (
+        !force &&
+        lastHistoricalRequestRef.current.key === requestKey &&
+        now - lastHistoricalRequestRef.current.at < 2000
+      ) {
+        return false;
+      }
+      lastHistoricalRequestRef.current = { key: requestKey, at: now };
+      const requestId =
+        options.requestId ||
+        `hist-${now}-${Math.random().toString(36).slice(2, 8)}`;
+      const historicalPayload = {
+        ...historicalPayloadBase,
+        pendingToDate: options.pendingToDate || null,
+        preserveVisibleRange: options.preserveVisibleRange || null,
+        symbol: selectedCurrency?.name || selectedCurrency?.symbol,
+        timeframe: timeframeValue,
+        requestId,
+      };
+      if ((options.mergeMode || "replace") === "replace") {
+        latestReplaceRequestIdRef.current = requestId;
+      }
+      const requestOptions = {
+        mergeMode: options.mergeMode || "replace",
+        pendingFromDate: options.pendingFromDate || null,
+        pendingToDate: options.pendingToDate || null,
+        preserveVisibleRange: options.preserveVisibleRange || null,
+        symbol: historicalPayload.symbol,
+        timeframe: timeframeValue,
+      };
+      historicalRequestOptionsRef.current.set(requestId, requestOptions);
+      // Some historical-data responses do not echo requestId. Keep the active
+      // request options so a scroll-back response still gets merged as a
+      // prepend and its indicators are fetched for the expanded date range.
+      activeHistoricalRequestRef.current = { requestId, ...requestOptions };
+      console.log("getManualHistoricalData Payload:", historicalPayload);
+      historyBackfillInFlightRef.current = true;
+      setIsFetchingCandles(true);
+      if (emitRef.current) {
+        emitRef.current(EVENTS.CHART.GET, historicalPayload);
+      }
+      return true;
+    },
+    [selectedCurrency, timeframeValue, fromDate, toDate],
+  );
+
+  const requestLiveTick = useCallback(
+    (force = false) => {
+      const symbol = selectedCurrency?.name || selectedCurrency?.symbol;
+      if (!symbol || !emitRef.current) return;
+      const requestKey = symbol.toUpperCase();
+      const now = Date.now();
+      if (
+        !force &&
+        lastLiveTickRequestRef.current.key === requestKey &&
+        now - lastLiveTickRequestRef.current.at < 1500
+      ) {
+        return false;
+      }
+      lastLiveTickRequestRef.current = { key: requestKey, at: now };
+      emitRef.current(EVENTS.OVERVIEW.GET, { symbol });
+      return true;
+    },
+    [selectedCurrency],
+  );
+
+  const requestOlderHistoricalChunk = useCallback(() => {
+    if (pendingGotoRef.current) return false;
+    if (
+      !chartRef.current ||
+      !selectedCurrency ||
+      !timeframeValue ||
+      historyBackfillInFlightRef.current ||
+      !Array.isArray(candlesRef.current) ||
+      candlesRef.current.length === 0
+    ) {
+      return false;
+    }
+
+    const visibleRange = chartRef.current.timeScale().getVisibleLogicalRange();
+    const firstLoadedCandle = candlesRef.current[0];
+    const firstLoadedTime = Number(firstLoadedCandle?.time);
+    const currentFrom = Number.isFinite(firstLoadedTime)
+      ? new Date((firstLoadedTime - IST_OFFSET) * 1000)
+      : new Date(fromDate);
+    if (Number.isNaN(currentFrom.getTime())) return false;
+
+    const chunkDays = getBackfillChunkDays(timeframeValue);
+    const newFrom = new Date(currentFrom);
+    newFrom.setDate(newFrom.getDate() - chunkDays);
+    const currentFromDate = currentFrom.toISOString().split("T")[0];
+    if (currentFromDate <= MIN_HISTORICAL_DATE) return false;
+
+    const newFromDate =
+      newFrom.toISOString().split("T")[0] < MIN_HISTORICAL_DATE
+        ? MIN_HISTORICAL_DATE
+        : newFrom.toISOString().split("T")[0];
+
+    if (
+      newFromDate === currentFromDate ||
+      (lastAutoBackfillFromRef.current === newFromDate &&
+        historyBackfillInFlightRef.current)
+    ) {
+      return false;
+    }
+
+    if (backfillTimeoutRef.current) clearTimeout(backfillTimeoutRef.current);
+    historyBackfillInFlightRef.current = true;
+    inFlightBackfillModeRef.current = "prepend";
+    lastAutoBackfillFromRef.current = newFromDate;
+    setMainChartLoading(true);
+
+    backfillTimeoutRef.current = setTimeout(() => {
+      historyBackfillInFlightRef.current = false;
+      inFlightBackfillModeRef.current = null;
+      lastAutoBackfillFromRef.current = null;
+      setMainChartLoading(false);
+    }, 4000);
+
+    return requestHistoricalData(
+      true,
+      {
+        fromDate: newFromDate,
+        toDate: currentFromDate,
+      },
+      {
+        mergeMode: "prepend",
+        pendingFromDate: newFromDate,
+        pendingToDate: currentFromDate,
+        preserveVisibleRange: visibleRange
+          ? { from: visibleRange.from, to: visibleRange.to }
+          : null,
+      },
+    );
+  }, [fromDate, requestHistoricalData, selectedCurrency, timeframeValue]);
+
+  const requestNewerHistoricalChunk = useCallback(() => {
+    if (pendingGotoRef.current) return false;
+    if (
+      !chartRef.current ||
+      !selectedCurrency ||
+      !timeframeValue ||
+      historyBackfillInFlightRef.current ||
+      !Array.isArray(candlesRef.current) ||
+      candlesRef.current.length === 0
+    ) {
+      return false;
+    }
+
+    const visibleRange = chartRef.current.timeScale().getVisibleLogicalRange();
+    const lastLoadedCandle = candlesRef.current[candlesRef.current.length - 1];
+    const lastLoadedTime = Number(lastLoadedCandle?.time);
+    const currentTo = Number.isFinite(lastLoadedTime)
+      ? new Date((lastLoadedTime - IST_OFFSET) * 1000)
+      : new Date(toDate);
+    if (Number.isNaN(currentTo.getTime())) return false;
+
+    const today = new Date();
+    const currentToStr = currentTo.toISOString().split("T")[0];
+    const todayStr = today.toISOString().split("T")[0];
+    if (currentToStr >= todayStr) {
+      return false;
+    }
+
+    const chunkDays = getBackfillChunkDays(timeframeValue);
+    const newTo = new Date(currentTo);
+    newTo.setDate(newTo.getDate() + chunkDays);
+    const newToDate =
+      newTo > today ? todayStr : newTo.toISOString().split("T")[0];
+
+    console.log("[HISTORY][FORWARD]", {
+      lastLoadedDate: getLoadedCandleRange().lastDate,
+      requestFrom: currentToStr,
+      requestTo: newToDate,
+    });
+
+    if (
+      newToDate === toDate ||
+      (lastAutoForwardToRef.current === newToDate &&
+        historyBackfillInFlightRef.current)
+    ) {
+      return false;
+    }
+
+    if (backfillTimeoutRef.current) clearTimeout(backfillTimeoutRef.current);
+    historyBackfillInFlightRef.current = true;
+    inFlightBackfillModeRef.current = "append";
+    lastAutoForwardToRef.current = newToDate;
+    setMainChartLoading(true);
+
+    backfillTimeoutRef.current = setTimeout(() => {
+      historyBackfillInFlightRef.current = false;
+      inFlightBackfillModeRef.current = null;
+      lastAutoForwardToRef.current = null;
+      setMainChartLoading(false);
+    }, 4000);
+
+    return requestHistoricalData(
+      true,
+      {
+        fromDate: currentToStr,
+        toDate: newToDate,
+      },
+      {
+        mergeMode: "append",
+        pendingToDate: newToDate,
+        preserveVisibleRange: visibleRange
+          ? { from: visibleRange.from, to: visibleRange.to }
+          : null,
+      },
+    );
+  }, [toDate, requestHistoricalData, selectedCurrency, timeframeValue, getLoadedCandleRange]);
+
+  const flushPendingLiveBar = useCallback(() => {
+    liveBarFlushTimerRef.current = null;
+    const updatedBar = pendingLiveBarRef.current;
+    if (!updatedBar) return;
+    if (
+      !seriesRef.current ||
+      !seriesReadyRef.current ||
+      chartDisposedRef.current
+    ) {
+      return;
+    }
+
+    const barSignature = buildLiveBarSignature(updatedBar);
+    if (
+      barSignature &&
+      barSignature === lastRenderedLiveBarSignatureRef.current
+    ) {
+      pendingLiveBarRef.current = null;
+      return;
+    }
+
+    if (pendingLiveBarMetaRef.current?.shouldAutoScale) {
+      setMainChartAutoScale(true);
+      if (liveAutoScaleResetTimerRef.current) {
+        clearTimeout(liveAutoScaleResetTimerRef.current);
+      }
+      liveAutoScaleResetTimerRef.current = setTimeout(() => {
+        setMainChartAutoScale(false);
+        liveAutoScaleResetTimerRef.current = null;
+      }, 900);
+    }
+
+    lastLiveBarPaintAtRef.current = Date.now();
+    lastRenderedLiveBarSignatureRef.current = barSignature;
+    pendingLiveBarRef.current = null;
+
+    const latestTrackedBar =
+      candlesRef.current?.[candlesRef.current.length - 1] || null;
+    const updatedBarTime = normalizeSeriesTime(updatedBar.time);
+    const latestTrackedBarTime = normalizeSeriesTime(latestTrackedBar?.time);
+    if (
+      Number.isFinite(updatedBarTime) &&
+      Number.isFinite(latestTrackedBarTime) &&
+      updatedBarTime < latestTrackedBarTime
+    ) {
+      return;
+    }
+
+    const activeChartType = chartTypeRef.current;
+    const liveSeriesPoint = buildLiveSeriesPoint(updatedBar, activeChartType);
+    if (!liveSeriesPoint) return;
+
+    try {
+      seriesRef.current.update(liveSeriesPoint);
+    } catch (e) {
+      if (e.message?.includes("oldest data")) {
+        try {
+          const rebuiltSeriesData = buildSeriesDataForChartType(
+            candlesRef.current,
+            activeChartType,
+          );
+          if (rebuiltSeriesData.length > 0) {
+            seriesRef.current.setData(rebuiltSeriesData);
+          }
+        } catch (rebuildError) {
+          console.warn(
+            "[LiveTick] Series rebuild failed:",
+            rebuildError.message,
+          );
+        }
+      } else {
+        console.warn("[LiveTick] Series update failed:", e.message);
+      }
+    }
+
+    if (!crosshairActiveRef.current) {
+      writeOhlcvDisplay(updatedBar);
+      writeActionButtonPrices(updatedBar);
+    }
+  }, [
+    buildLiveBarSignature,
+    buildLiveSeriesPoint,
+    buildSeriesDataForChartType,
+    normalizeSeriesTime,
+    setMainChartAutoScale,
+    writeActionButtonPrices,
+    writeOhlcvDisplay,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (liveBarFlushTimerRef.current) {
+        clearTimeout(liveBarFlushTimerRef.current);
+        liveBarFlushTimerRef.current = null;
+      }
+      if (liveAutoScaleResetTimerRef.current) {
+        clearTimeout(liveAutoScaleResetTimerRef.current);
+        liveAutoScaleResetTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const requestLastThreeCandles = useCallback(() => {
+    if (pendingGotoRef.current) return false;
+    if (
+      reconciliationRunningRef.current ||
+      !selectedCurrency ||
+      !timeframeValue ||
+      !isWithinReconciliationWindow()
+    ) {
+      return false;
+    }
+
+    const { lastDate: lastLoadedDate } = getLoadedCandleRange();
+    const today = getTodayDateString();
+    if (!lastLoadedDate || lastLoadedDate < today) {
+      const logKey = `${lastLoadedDate || "none"}|${today}`;
+      if (historicalLiveGuardLogRef.current.reconcileSkip !== logKey) {
+        historicalLiveGuardLogRef.current.reconcileSkip = logKey;
+        console.log("[RECONCILE][SKIP-HISTORICAL]", {
+          lastLoadedDate,
+          today,
+        });
+      }
+      return false;
+    }
+
+    reconciliationRunningRef.current = true;
+    const now = new Date();
+    const recentFromDate = new Date(now.getTime() - 10 * 60 * 1000);
+    const requested = requestHistoricalData(
+      true,
+      { fromDate: recentFromDate.toISOString(), toDate: now.toISOString() },
+      { mergeMode: "reconcile", preserveVisibleRange: true },
+    );
+    window.setTimeout(() => {
+      reconciliationRunningRef.current = false;
+    }, 10000);
+    return requested;
+  }, [selectedCurrency, timeframeValue, requestHistoricalData, getLoadedCandleRange]); // "?"? Central Socket Hook "?"?
+  const normalizeCandle = useCallback((candle) => {
+    if (!candle) return null;
+    let time = Number(candle.time ?? candle.timestamp ?? candle.datetime);
+    if (!Number.isFinite(time))
+      time = Math.floor(new Date(candle.datetime).getTime() / 1000);
+    if (time > 10000000000) time = Math.floor(time / 1000);
+    return {
+      ...candle,
+      time: time + IST_OFFSET,
+      open: Number(candle.open),
+      high: Number(candle.high),
+      low: Number(candle.low),
+      close: Number(candle.close),
+      volume: Number(candle.volume ?? 0),
+    };
+  }, []);
+  const {
+    emit,
+    once,
+    connected,
+    off,
+    socket: dataSocket,
+  } = useSocket({
+    disableOverviewLiveTickFallback: true,
+    handleAiPredictionStatus: (data) => {
+      const newData =
+        typeof data === "object" && data !== null ? { ...data } : data;
+      setPredictionStatus(newData);
+
+      if (newData.status === "running") {
+        setIsPredicting(true);
+      } else if (newData.status === "done" || newData.status === "complete") {
+        setIsPredicting(false);
+        setTimeout(async () => {
+          setPredictResultData((currentResults) => {
+            if (currentResults && currentResults.length > 0)
+              return currentResults;
+            apiService.get("/api/predictResult").then((res) => {
+              const results = Array.isArray(res?.data)
+                ? res.data
+                : Array.isArray(res)
+                  ? res
+                  : [];
+              if (results.length > 0) {
+                const mapped = results.map((item) => ({
+                  symbol: item.symbol,
+                  response: {
+                    type: item.trade_type,
+                    entry_time: item.entry_time,
+                    entry_price: item.entry_price,
+                    signal: item.signal,
+                    trend: item.trend,
+                    status: item.status,
+                    rsi: item.rsi,
+                    candle_open: item.candle_open,
+                    candle_high: item.candle_high,
+                    candle_low: item.candle_low,
+                    candle_close: item.candle_close,
+                    candle_volume: item.candle_volume,
+                  },
+                  tick: { datetime: item.entry_time },
+                  uuid: item.uuid,
+                  created_at: item.created_at,
+                }));
+                setPredictResultData(deduplicateTrades(mapped));
+                const signals = results.map((item) => {
+                  let timeStr =
+                    item.entry_time ||
+                    item.created_at ||
+                    new Date().toISOString();
+                  return {
+                    symbol: item.symbol,
+                    signalType: item.trade_type,
+                    timestamp: timeStr.replace(" ", "T"),
+                    segment: "SCRIPT",
+                  };
+                });
+                setDashboardSignals((prev) => [...prev, ...signals]);
+                setIsDeployed(true);
+                setDeployedStrategyCode("API_PREDICTION");
+              }
+            });
+            return currentResults;
+          });
+        }, 1500);
+      }
+    },
+    handleAiTradeSignal: (tradeData) => {
+      const mappedSignal = {
+        symbol: tradeData.symbol,
+        response: {
+          type: tradeData.trade_type,
+          entry_time: tradeData.entry_time,
+          entry_price: tradeData.entry_price,
+          signal: tradeData.signal,
+        },
+        tick: { datetime: tradeData.entry_time },
+      };
+      setPredictResultData((prev) =>
+        deduplicateTrades([mappedSignal, ...prev]),
+      );
+      let timeStr =
+        tradeData.entry_time || tradeData.timestamp || new Date().toISOString();
+      setDashboardSignals((prev) => [
+        ...prev,
+        {
+          symbol: tradeData.symbol,
+          signalType: tradeData.trade_type,
+          timestamp: timeStr.replace(" ", "T"),
+          segment: "SCRIPT",
+        },
+      ]);
+      setIsDeployed(true);
+      setDeployedStrategyCode("API_PREDICTION");
+    },
+    handleConnect: () => {
+      console.log("o. SOCKET CONNECTED", true);
+      requestLiveTick(true);
+
+      if (!hasConnectedOnceRef.current) {
+        hasConnectedOnceRef.current = true;
+        requestHistoricalData(true);
+
+        if (
+          selectedIndicatorRef.current &&
+          selectedIndicatorRef.current.length > 0
+        ) {
+          safeFetchIndicatorData(
+            selectedIndicatorRef.current,
+            selectedCurrency,
+            timeframeValue,
+          );
+        }
+      }
+    },
+    handleHistoricalData: (response) => {
+      console.log("HISTORICAL DATA RESPONSE", response?.data);
+      if (!chartRef.current || chartDisposedRef.current) return;
+      const requestId =
+        response?.requestId ||
+        response?.meta?.requestId ||
+        response?.data?.requestId ||
+        null;
+      const requestMeta = requestId
+        ? historicalRequestOptionsRef.current.get(requestId)
+        : activeHistoricalRequestRef.current;
+      const pendingGoto = pendingGotoRef.current;
+      const isGotoResponse = Boolean(
+        pendingGoto && requestId && requestId === pendingGoto.requestId,
+      );
+      const isStaleGotoResponse = Boolean(
+        requestId?.startsWith("goto-") &&
+          (!pendingGoto || requestId !== pendingGoto.requestId),
+      );
+
+      if (isStaleGotoResponse) {
+        historicalRequestOptionsRef.current.delete(requestId);
+        console.log("[GoTo] stale response ignored", { requestId });
+        return;
+      }
+
+      if (isGotoResponse) {
+        console.log("[GoTo] matching historical response", { requestId });
+      }
+
+      if (requestId) {
+        historicalRequestOptionsRef.current.delete(requestId);
+      }
+
+      const mergeMode =
+        requestMeta?.mergeMode ||
+        inFlightBackfillModeRef.current ||
+        historicalMergeModeRef.current ||
+        "replace";
+
+      if (
+        mergeMode === "replace" &&
+        requestId &&
+        latestReplaceRequestIdRef.current &&
+        requestId !== latestReplaceRequestIdRef.current
+      ) {
+        return;
+      }
+
+      if (
+        requestMeta?.symbol &&
+        !isSameSymbolName(requestMeta.symbol, selectedCurrency?.name) &&
+        !isSameSymbolName(requestMeta.symbol, selectedCurrency?.symbol)
+      ) {
+        return;
+      }
+
+      if (
+        requestMeta?.timeframe &&
+        requestMeta.timeframe !== timeframeValue &&
+        mergeMode === "replace"
+      ) {
+        return;
+      }
+
+      const rawCandles = Array.isArray(response)
+        ? response
+        : response?.candles || response?.data?.candles || response?.data || [];
+      const incomingCandles = rawCandles
+        .map(normalizeCandle)
+        .filter(
+          (candle) =>
+            candle &&
+            Number.isFinite(candle.time) &&
+            Number.isFinite(candle.open) &&
+            Number.isFinite(candle.high) &&
+            Number.isFinite(candle.low) &&
+            Number.isFinite(candle.close),
+        )
+        .sort((a, b) => a.time - b.time);
+      const raw = rawCandles;
+
+      if (requestMeta?.mergeMode === "reconcile") {
+        const latestThreeCandles = incomingCandles.slice(-3);
+        const candleMap = new Map(
+          candlesRef.current.map((candle) => [Number(candle.time), candle]),
+        );
+        const changedCandles = latestThreeCandles;
+        latestThreeCandles.forEach((incoming) => {
+          candleMap.set(Number(incoming.time), incoming);
+        });
+        candlesRef.current = Array.from(candleMap.values()).sort(
+          (a, b) => Number(a.time) - Number(b.time),
+        );
+        const chartCandles = changedCandles.sort((a, b) => a.time - b.time);
+
+        console.log("[RECONCILIATION] Candles received:", latestThreeCandles);
+        console.log("[RECONCILIATION] Candles changed:", changedCandles);
+        console.log("[RECONCILIATION] Candles sent to chart:", chartCandles);
+        try {
+          // `update` only reliably changes the newest bar. Rebuild the series so
+          // corrections to any reconciled historical candle are painted.
+          seriesRef.current?.setData(
+            buildSeriesDataForChartType(
+              candlesRef.current,
+              chartTypeRef.current,
+            ),
+          );
+        } catch (error) {
+          console.warn("[RECONCILIATION] Chart redraw failed:", error);
+        }
+        const latestCandle =
+          candlesRef.current[candlesRef.current.length - 1] || null;
+        currentCandleRef.current = latestCandle;
+        lastCandleTimeRef.current = latestCandle?.time || null;
+        if (!crosshairActiveRef.current) {
+          writeOhlcvDisplay(latestCandle);
+          writeActionButtonPrices(latestCandle);
+        }
+        if (changedCandles.length) setCandleDataVersion((value) => value + 1);
+        historicalRequestOptionsRef.current.delete(requestId);
+        reconciliationRunningRef.current = false;
+        // requestHistoricalData also marks reconciliation requests as in flight.
+        // Release that shared lock so scroll-back pagination can request older bars.
+        historyBackfillInFlightRef.current = false;
+        inFlightBackfillModeRef.current = null;
+        if (
+          !requestId ||
+          activeHistoricalRequestRef.current?.requestId === requestId
+        ) {
+          activeHistoricalRequestRef.current = null;
+        }
+        setIsFetchingCandles(false);
+        return;
+      }
+
+      if (backfillTimeoutRef.current) {
+        clearTimeout(backfillTimeoutRef.current);
+        backfillTimeoutRef.current = null;
+      }
+
+      if (raw.length === 0) {
+        if (isGotoResponse && pendingGotoRef.current?.requestId === requestId) {
+          pendingGotoRef.current = null;
+          console.log("[GoTo] request failed", { requestId, reason: "no candles" });
+        }
+        historicalMergeModeRef.current = "replace";
+        pendingHistoricalFromDateRef.current = null;
+        historyBackfillInFlightRef.current = false;
+        lastAutoBackfillFromRef.current = null;
+        lastAutoForwardToRef.current = null;
+        if (
+          !requestId ||
+          activeHistoricalRequestRef.current?.requestId === requestId
+        ) {
+          activeHistoricalRequestRef.current = null;
+        }
+        setIsFetchingCandles(false);
+        if (mergeMode === "prepend") {
+          setMainChartLoading(false);
+          return;
+        }
+        setNoDataAvailable(true);
+        setMainChartLoading(false);
+        if (seriesRef.current) {
+          try {
+            chartRef.current.removeSeries(seriesRef.current);
+          } catch {}
+          seriesRef.current = null;
+        }
+        return;
+      }
+
+      setNoDataAvailable(false);
+
+      const symbolFromResponse =
+        response?.symbol || raw[0]?.symbol || selectedCurrency?.name;
+
+      const parsedData = [];
+      for (let i = 0; i < raw.length; i++) {
+        const d = raw[i];
+        const time = Number(d.time) + IST_OFFSET;
+        const open = parseFloat(d.open);
+        const high = parseFloat(d.high);
+        const low = parseFloat(d.low);
+        const close = parseFloat(d.close);
+        const volume = parseFloat(d.volume || 0);
+
+        if (
+          !Number.isNaN(time) &&
+          !Number.isNaN(open) &&
+          !Number.isNaN(high) &&
+          !Number.isNaN(low) &&
+          !Number.isNaN(close)
+        ) {
+          parsedData.push({ time, open, high, low, close, volume });
+        }
+      }
+      parsedData.sort((a, b) => a.time - b.time);
+
+      const data = [];
+      let aggregateHigh = -Infinity;
+      let aggregateLow = Infinity;
+
+      for (let i = 0; i < parsedData.length; i++) {
+        const d = parsedData[i];
+        // Only keep the last tick for a given timestamp
+        if (i === parsedData.length - 1 || d.time !== parsedData[i + 1].time) {
+          data.push(d);
+          if (d.high > aggregateHigh) aggregateHigh = d.high;
+          if (d.low < aggregateLow) aggregateLow = d.low;
+        }
+      }
+
+      const mergedData = mergeHistoricalSeries(
+        candlesRef.current,
+        data,
+        mergeMode,
+      );
+      const previousLength = candlesRef.current?.length || 0;
+      const addedPoints = Math.max(0, mergedData.length - previousLength);
+      candlesRef.current = mergedData;
+      setCandleDataVersion((prev) => prev + 1);
+      historicalMergeModeRef.current = "replace";
+      historyBackfillInFlightRef.current = false;
+      lastAutoBackfillFromRef.current = null;
+      lastAutoForwardToRef.current = null;
+      if (
+        !requestId ||
+        activeHistoricalRequestRef.current?.requestId === requestId
+      ) {
+        activeHistoricalRequestRef.current = null;
+      }
+      setIsFetchingCandles(false);
+
+      if (!mergedData.length) {
+        setMainChartLoading(false);
+        toast.error(`No historical data found for ${symbolFromResponse}`);
+        return;
+      }
+
+      const pendingFromDate =
+        requestMeta?.pendingFromDate || pendingHistoricalFromDateRef.current;
+      if (mergeMode === "prepend" && pendingFromDate) {
+        suppressNextHistoricalReloadRef.current = true;
+        suppressNextIndicatorContextFetchRef.current = true;
+        handleSetFromDate(pendingFromDate);
+        pendingHistoricalFromDateRef.current = null;
+      }
+
+      const pendingToDate =
+        requestMeta?.pendingToDate || pendingHistoricalToDateRef.current;
+      if (mergeMode === "append" && pendingToDate) {
+        suppressNextHistoricalReloadRef.current = true;
+        setToDate(pendingToDate);
+        pendingHistoricalToDateRef.current = null;
+      }
+
+      const lastPoint = mergedData[mergedData.length - 1];
+      if (mergeMode === "replace") {
+        pendingLiveBarRef.current = null;
+        pendingLiveBarMetaRef.current = { shouldAutoScale: false };
+        lastQueuedLiveBarSignatureRef.current = null;
+        lastRenderedLiveBarSignatureRef.current =
+          buildLiveBarSignature(lastPoint);
+      }
+
+      setDetailsList((prev) => {
+        const existingIdx = prev.findIndex(
+          (s) =>
+            s.name === symbolFromResponse || s.symbol === symbolFromResponse,
+        );
+        if (existingIdx === -1) return prev;
+
+        const newList = [...prev];
+        newList[existingIdx] = {
+          ...newList[existingIdx],
+          ltp: lastPoint.close,
+          high: aggregateHigh,
+          low: aggregateLow,
+        };
+        return newList;
+      });
+
+      if (
+        !isSameSymbolName(symbolFromResponse, selectedCurrency?.name) &&
+        !isSameSymbolName(symbolFromResponse, selectedCurrency?.symbol)
+      ) {
+        console.log(
+          `Skipping chart update for ${symbolFromResponse} (Active: ${selectedCurrency?.name})`,
+        );
+        return;
+      }
+
+      if (
+        seriesRef.current &&
+        seriesRef.current.customChartType !== chartType
+      ) {
+        try {
+          chartRef.current.removeSeries(seriesRef.current);
+        } catch {}
+        seriesRef.current = null;
+        customScriptMarkersRef.current = null;
+        strategyMarkersRef.current = null;
+      }
+
+      // Reset price scale so Y-axis re-adapts to the new symbol's price range.
+      // Without this, switching from e.g. a ,50 stock to a ,5000 stock keeps
+      // the old Y range and the new candles appear off-screen.
+      try {
+        chartRef.current.priceScale("right").applyOptions({ autoScale: true });
+      } catch {}
+      if (liveAutoScaleResetTimerRef.current) {
+        clearTimeout(liveAutoScaleResetTimerRef.current);
+      }
+      liveAutoScaleResetTimerRef.current = setTimeout(() => {
+        setMainChartAutoScale(false);
+        liveAutoScaleResetTimerRef.current = null;
+      }, 1200);
+
+      if (!chartRef.current || chartDisposedRef.current) return;
+
+      switch (chartType) {
+        case "line":
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(
+              LineSeries,
+              chartSeriesStyles.line,
+            );
+            seriesRef.current.customChartType = "line";
+          }
+          try {
+            seriesRef.current.setData(
+              mergedData?.map((d) => ({
+                time: d.time,
+                value: Number(d.close),
+              })),
+            );
+          } catch (e) {
+            console.error("Line setData error:", e);
+          }
+          fetchStrategyMarkers();
+          break;
+        case "bar":
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(
+              BarSeries,
+              chartSeriesStyles.bar,
+            );
+            seriesRef.current.customChartType = "bar";
+          }
+          try {
+            seriesRef.current.setData(mergedData);
+          } catch (e) {
+            console.error("Bar setData error:", e);
+          }
+          fetchStrategyMarkers();
+          break;
+        case "area":
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(
+              AreaSeries,
+              chartSeriesStyles.area,
+            );
+            seriesRef.current.customChartType = "area";
+          }
+          try {
+            seriesRef.current.setData(
+              mergedData?.map((d) => ({
+                time: d.time,
+                value: Number(d.close),
+              })),
+            );
+          } catch (e) {
+            console.error("Area setData error:", e);
+          }
+          break;
+        case "baseline":
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(BaselineSeries, {
+              ...chartSeriesStyles.baseline,
+              baseValue: {
+                type: "price",
+                price: Number(mergedData[0]?.close ?? 0),
+              },
+            });
+            seriesRef.current.customChartType = "baseline";
+          } else {
+            seriesRef.current.applyOptions({
+              baseValue: {
+                type: "price",
+                price: Number(mergedData[0]?.close ?? 0),
+              },
+            });
+          }
+          try {
+            seriesRef.current.setData(
+              mergedData?.map((d) => ({
+                time: d.time,
+                value: Number(d.close),
+              })),
+            );
+          } catch (e) {
+            console.error("Baseline setData error:", e);
+          }
+          break;
+        case "histogram":
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(
+              HistogramSeries,
+              chartSeriesStyles.histogram,
+            );
+            seriesRef.current.customChartType = "histogram";
+          }
+          try {
+            seriesRef.current.setData(
+              mergedData?.map((d, index, arr) => {
+                const prev = arr[index - 1];
+                const isUp = prev ? d.close >= prev.close : true;
+                return {
+                  time: d.time,
+                  value: d.volume,
+                  color: isUp ? "#22c55e" : "#ef4444",
+                };
+              }),
+            );
+          } catch (e) {
+            console.error("Histogram setData error:", e);
+          }
+          break;
+        case "heikinashi":
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(
+              CandlestickSeries,
+              chartSeriesStyles.candlestick,
+            );
+            seriesRef.current.customChartType = "heikinashi";
+          }
+          try {
+            seriesRef.current.setData(
+              customScriptBarColorsAppliedRef.current
+                ? applySandboxBarColorsToData(mergedData, "heikinashi")
+                : convertToHeikinAshi(mergedData),
+            );
+          } catch (e) {
+            console.error("HA setData error:", e);
+          }
+          break;
+        case "hollowcandles":
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(
+              CandlestickSeries,
+              chartSeriesStyles.hollowcandles,
+            );
+            seriesRef.current.customChartType = "hollowcandles";
+          }
+          try {
+            seriesRef.current.setData(
+              customScriptBarColorsAppliedRef.current
+                ? applySandboxBarColorsToData(mergedData, "hollowcandles")
+                : mergedData,
+            );
+          } catch (e) {
+            console.error("Hollow setData error:", e);
+          }
+          break;
+        default:
+          if (!seriesRef.current) {
+            seriesRef.current = chartRef.current.addSeries(
+              CandlestickSeries,
+              chartSeriesStyles.candlestick,
+            );
+            seriesRef.current.customChartType = chartType;
+          }
+          try {
+            seriesRef.current.setData(
+              customScriptBarColorsAppliedRef.current
+                ? applySandboxBarColorsToData(mergedData, "candlestick")
+                : mergedData,
+            );
+          } catch (e) {
+            console.error("Default setData error:", e);
+          }
+      }
+
+      seriesReadyRef.current = true;
+
+      if (isGotoResponse) {
+        const gotoRequestId = requestId;
+        requestAnimationFrame(() => {
+          const activeGoto = pendingGotoRef.current;
+          if (!activeGoto || activeGoto.requestId !== gotoRequestId) return;
+
+          console.log("[GoTo] applying target", {
+            requestId: gotoRequestId,
+            targetDate: activeGoto.targetDate,
+          });
+          if (applyGoToTarget(activeGoto.targetDate)) {
+            suppressNextHistoricalReloadRef.current = true;
+            handleSetFromDate(activeGoto.fromDate);
+            setToDate(activeGoto.toDate);
+            pendingGotoRef.current = null;
+            console.log("[GoTo] completed", { requestId: gotoRequestId });
+          } else if (pendingGotoRef.current?.requestId === gotoRequestId) {
+            pendingGotoRef.current = null;
+            console.warn("[GoTo] request failed", {
+              requestId: gotoRequestId,
+              reason: "target could not be applied",
+            });
+          }
+        });
+      }
+
+      // Sequential indicator fetch removed to enable parallel loading.
+      // Indicators are fetched simultaneously via the selectedIndicator useEffect.
+
+      if (lastDeployedMarkersRef.current?.length > 0 && seriesRef.current) {
+        const shouldShowStrategyVisuals =
+          areStrategyVisualsVisibleRef.current !== false;
+        if (!customScriptMarkersRef.current) {
+          customScriptMarkersRef.current = createSeriesMarkers(
+            seriesRef.current,
+            shouldShowStrategyVisuals ? lastDeployedMarkersRef.current : [],
+          );
+          try {
+            seriesRef.current.attachPrimitive(customScriptMarkersRef.current);
+          } catch (e) {
+            if (!e?.message?.includes("Object is disposed")) throw e;
+          }
+        } else {
+          try {
+            customScriptMarkersRef.current.setMarkers(
+              areStrategyVisualsVisible ? lastDeployedMarkersRef.current : [],
+            );
+          } catch (e) {
+            if (!e?.message?.includes("Object is disposed")) throw e;
+          }
+        }
+      }
+
+      currentCandleRef.current = mergedData[mergedData?.length - 1];
+
+      setTimeout(() => {
+        const last = mergedData[mergedData?.length - 1];
+        writeOhlcvDisplay(last);
+        writeActionButtonPrices(last);
+
+        try {
+          if (mergeMode === "prepend" && requestMeta?.preserveVisibleRange) {
+            chartRef.current?.timeScale().setVisibleLogicalRange({
+              from: requestMeta.preserveVisibleRange.from + addedPoints,
+              to: requestMeta.preserveVisibleRange.to + addedPoints,
+            });
+          } else if (
+            mergeMode === "append" &&
+            requestMeta?.preserveVisibleRange
+          ) {
+            chartRef.current?.timeScale().setVisibleLogicalRange({
+              from: requestMeta.preserveVisibleRange.from,
+              to: requestMeta.preserveVisibleRange.to,
+            });
+          } else if (mergeMode === "replace" && !isGotoResponse) {
+            const defaultVisibleBars = 200;
+            const lastLogicalIndex = mergedData.length - 1;
+            chartRef.current?.timeScale().setVisibleLogicalRange({
+              from: Math.max(0, lastLogicalIndex - defaultVisibleBars + 1),
+              to: lastLogicalIndex,
+            });
+          }
+        } catch (e) {
+          if (!e?.message?.includes("Object is disposed"))
+            console.error("timeScale error:", e);
+        }
+
+        if (
+          selectedIndicatorRef.current &&
+          selectedIndicatorRef.current.length > 0 &&
+          mergeMode !== "replace"
+        ) {
+          const fetchFrom =
+            requestMeta?.pendingFromDate ||
+            pendingHistoricalFromDateRef.current ||
+            fromDate;
+          const fetchTo =
+            requestMeta?.pendingToDate ||
+            pendingHistoricalToDateRef.current ||
+            toDate;
+          safeFetchIndicatorData(
+            selectedIndicatorRef.current,
+            selectedCurrency,
+            timeframeValue,
+            fetchFrom,
+            fetchTo,
+          );
+        }
+
+        const effectiveFetchFrom =
+          requestMeta?.pendingFromDate ||
+          pendingHistoricalFromDateRef.current ||
+          fromDate;
+        const effectiveFetchTo =
+          requestMeta?.pendingToDate ||
+          pendingHistoricalToDateRef.current ||
+          toDate;
+
+        if (
+          (mergeMode === "prepend" || mergeMode === "append") &&
+          isDeployed &&
+          deployedStrategyCode === SANDBOX_DEPLOYMENT_CODE &&
+          !isDeploying &&
+          editorCode?.trim()
+        ) {
+          const paginationDeployKey = [
+            mergeMode,
+            effectiveFetchFrom,
+            effectiveFetchTo,
+            timeframeValue,
+            selectedCurrency?.symbol || selectedCurrency?.name || "",
+            mergedData.length,
+          ].join("|");
+
+          if (lastPaginationAutoDeployKeyRef.current !== paginationDeployKey) {
+            lastPaginationAutoDeployKeyRef.current = paginationDeployKey;
+            handleDeployCode(editorCode, {
+              fromDate: effectiveFetchFrom,
+              toDate: effectiveFetchTo,
+              timeframe: timeframeValue,
+            });
+          }
+        }
+
+        setMainChartLoading(false);
+        symbolTransitioningRef.current = false;
+        setSymbolTransitioning(false);
+      }, 150);
+    },
+    handleHistoricalError: (err) => {
+      const failedRequestId =
+        err?.requestId || err?.meta?.requestId || err?.data?.requestId || null;
+      if (
+        failedRequestId &&
+        pendingGotoRef.current?.requestId === failedRequestId
+      ) {
+        pendingGotoRef.current = null;
+        console.log("[GoTo] request failed", { requestId: failedRequestId });
+      }
+      if (backfillTimeoutRef.current) {
+        clearTimeout(backfillTimeoutRef.current);
+        backfillTimeoutRef.current = null;
+      }
+      historicalMergeModeRef.current = "replace";
+      pendingHistoricalFromDateRef.current = null;
+      pendingHistoricalToDateRef.current = null;
+      activeHistoricalRequestRef.current = null;
+      historyBackfillInFlightRef.current = false;
+      lastAutoBackfillFromRef.current = null;
+      lastAutoForwardToRef.current = null;
+      toast.error(err?.message || "Failed to fetch historical data");
+      console.error("O Historical data error:", err);
+      setMainChartLoading(false);
+      symbolTransitioningRef.current = false;
+      setSymbolTransitioning(false);
+    },
+    handleLiveTick: (tickOrArray) => {
+      // console.log("Live tick received:", tickOrArray);
+      const ticks = Array.isArray(tickOrArray) ? tickOrArray : [tickOrArray];
+
+      ticks.forEach((tick) => {
+        const liveData = tick?.data || tick?.tick || tick || {};
+        const rawData = tick?.raw || tick?.overview || {};
+        const tickSymbol = normalize(
+          tick?.symbol ?? liveData?.symbol ?? rawData?.symbol,
+        );
+        const ltp = Number(
+          tick?.raw?.last_traded_price ??
+            tick?.overview?.ltp ??
+            tick?.overview?.last_traded_price ??
+            liveData?.last_traded_price ??
+            liveData?.ltp ??
+            liveData?.price,
+        );
+
+        if (tickSymbol && Number.isFinite(ltp) && ltp > 0) {
+          setLiveLtpBySymbol((previous) => {
+            const matchingKeys = detailsList.flatMap((stock) => {
+              const keys = [normalize(stock?.name), normalize(stock?.symbol)];
+              return keys.some((key) => isSameSymbolName(key, tickSymbol))
+                ? keys.filter(Boolean)
+                : [];
+            });
+
+            if (!matchingKeys.length || matchingKeys.every((key) => previous[key] === ltp)) {
+              return previous;
+            }
+
+            const next = { ...previous };
+            matchingKeys.forEach((key) => {
+              next[key] = ltp;
+            });
+            return next;
+          });
+        }
+
+        const activeSymbol = normalize(selectedCurrency?.name);
+
+        if (!isSameSymbolName(tickSymbol, activeSymbol)) return;
+
+        // console.log(
+        //   `[LIVE TICK] Symbol: ${tickSymbol}, Active: ${activeSymbol}`,
+        //   tick,
+        // );
+
+        if (
+          !seriesRef.current ||
+          !seriesReadyRef.current ||
+          chartDisposedRef.current
+        )
+          return;
+
+        let rawTickTime =
+          tick?.raw?.datetime ??
+          tick?.overview?.datetime ??
+          tick?.raw?.exchange_timestamp ??
+          tick?.overview?.exchange_timestamp ??
+          liveData?.time ??
+          liveData?.tickTime ??
+          liveData?.datetime;
+
+        let tickTime = Number(rawTickTime);
+
+        if (!Number.isFinite(tickTime)) {
+          tickTime = Math.floor(new Date(rawTickTime).getTime() / 1000);
+        }
+        if (tickTime > 10000000000) tickTime = Math.floor(tickTime / 1000);
+
+        const adjustedTime = tickTime + IST_OFFSET;
+        const normalizedTime =
+          Math.floor(adjustedTime / intervalSec) * intervalSec;
+
+        if (!Number.isFinite(ltp) || ltp <= 0) {
+          console.warn("[LIVE TICK] LTP is invalid, skipping");
+          return;
+        }
+        if (!Number.isFinite(tickTime)) {
+          console.warn("[LIVE TICK] tickTime is not finite, skipping");
+          return;
+        }
+        if (!Number.isFinite(normalizedTime) || normalizedTime <= 0) {
+          console.warn("[LIVE TICK] normalizedTime invalid, skipping");
+          return;
+        }
+
+        const { lastDate: lastLoadedDate } = getLoadedCandleRange();
+        const today = getTodayDateString();
+        const logKey = `${lastLoadedDate || "none"}|${today}`;
+        if (!lastLoadedDate || lastLoadedDate < today) {
+          if (historicalLiveGuardLogRef.current.liveSkip !== logKey) {
+            historicalLiveGuardLogRef.current.liveSkip = logKey;
+            console.log("[LIVE][SKIP-HISTORICAL]", {
+              lastLoadedDate,
+              today,
+            });
+          }
+          return;
+        }
+
+        if (historicalLiveGuardLogRef.current.liveEligible !== logKey) {
+          historicalLiveGuardLogRef.current.liveEligible = logKey;
+          console.log("[LIVE][ELIGIBLE]", { lastLoadedDate, today });
+        }
+
+        if (pendingGotoRef.current) return;
+
+        lastValidTickAtRef.current = Date.now();
+
+        // The volume from liveData.volume is per-tick; use raw.volume (total day volume) as fallback
+        const liveVolume = Number(rawData?.volume ?? liveData?.volume ?? 0);
+
+        const existingIndex = candlesRef.current.findIndex(
+          (c) => c.time === normalizedTime,
+        );
+        const existingCandle =
+          existingIndex >= 0 ? candlesRef.current[existingIndex] : null;
+        const latestCandle =
+          candlesRef.current.length > 0
+            ? candlesRef.current[candlesRef.current.length - 1]
+            : null;
+
+        const rawOpen =
+          rawData?.open != null ? Number(rawData.open) : undefined;
+        const rawHigh =
+          rawData?.high != null ? Number(rawData.high) : undefined;
+        const rawLow = rawData?.low != null ? Number(rawData.low) : undefined;
+        const rawClose =
+          rawData?.close != null ? Number(rawData.close) : undefined;
+        const rawVolume =
+          tick?.raw?.volume != null
+            ? Number(tick.raw.volume)
+            : tick?.overview?.volume != null
+              ? Number(tick.overview.volume)
+              : undefined;
+
+        let updatedBar;
+        if (existingCandle) {
+          // Update the existing live candle using raw OHLC if available, fallback to LTP
+          updatedBar = {
+            ...existingCandle,
+            open: rawOpen !== undefined ? rawOpen : existingCandle.open,
+            high:
+              rawHigh !== undefined
+                ? rawHigh
+                : Math.max(Number(existingCandle.high), ltp),
+            low:
+              rawLow !== undefined
+                ? rawLow
+                : Math.min(Number(existingCandle.low), ltp),
+            close: rawClose !== undefined ? rawClose : ltp,
+            volume:
+              rawVolume !== undefined
+                ? rawVolume
+                : liveVolume || Number(existingCandle.volume || 0),
+          };
+        } else if (!latestCandle || normalizedTime > latestCandle.time) {
+          // New candle
+          const newCandleOpen = latestCandle ? Number(latestCandle.close) : ltp;
+          updatedBar = {
+            time: normalizedTime,
+            open:
+              rawOpen !== undefined
+                ? rawOpen
+                : Number.isFinite(newCandleOpen)
+                  ? newCandleOpen
+                  : ltp,
+            high: rawHigh !== undefined ? rawHigh : ltp,
+            low: rawLow !== undefined ? rawLow : ltp,
+            close: rawClose !== undefined ? rawClose : ltp,
+            volume: rawVolume !== undefined ? rawVolume : liveVolume,
+          };
+        } else if (normalizedTime < latestCandle.time) {
+          // Stale tick (older than current candle) ?" ignore
+          return;
+        } else {
+          // Same time as latest candle, extend it
+          updatedBar = {
+            ...latestCandle,
+            open: rawOpen !== undefined ? rawOpen : latestCandle.open,
+            high:
+              rawHigh !== undefined
+                ? rawHigh
+                : Math.max(Number(latestCandle.high), ltp),
+            low:
+              rawLow !== undefined
+                ? rawLow
+                : Math.min(Number(latestCandle.low), ltp),
+            close: rawClose !== undefined ? rawClose : ltp,
+            volume:
+              rawVolume !== undefined
+                ? rawVolume
+                : liveVolume || Number(latestCandle.volume || 0),
+          };
+        }
+
+        const nextBarSignature = buildLiveBarSignature(updatedBar);
+        if (
+          nextBarSignature &&
+          (nextBarSignature === lastQueuedLiveBarSignatureRef.current ||
+            nextBarSignature === lastRenderedLiveBarSignatureRef.current)
+        ) {
+          return;
+        }
+
+        currentCandleRef.current = updatedBar;
+        if (existingIndex >= 0) candlesRef.current[existingIndex] = updatedBar;
+        else candlesRef.current.push(updatedBar);
+        candlesRef.current.sort((a, b) => a.time - b.time);
+        setCandleDataVersion((prev) => prev + 1);
+        currentCandleRef.current =
+          candlesRef.current[candlesRef.current.length - 1] || updatedBar;
+        lastCandleTimeRef.current = normalizedTime;
+        lastQueuedLiveBarSignatureRef.current = nextBarSignature;
+        pendingLiveBarMetaRef.current = {
+          shouldAutoScale:
+            !existingCandle &&
+            (!latestCandle || normalizedTime > latestCandle.time),
+        };
+
+        pendingLiveBarRef.current = updatedBar;
+        const now = Date.now();
+        const elapsed = now - (lastLiveBarPaintAtRef.current || 0);
+        if (elapsed >= LIVE_BAR_RENDER_INTERVAL_MS) {
+          flushPendingLiveBar();
+        } else if (!liveBarFlushTimerRef.current) {
+          liveBarFlushTimerRef.current = setTimeout(
+            flushPendingLiveBar,
+            LIVE_BAR_RENDER_INTERVAL_MS - elapsed,
+          );
+        }
+
+        const activeIndicators = selectedIndicatorRef.current;
+        if (activeIndicators?.length > 0) {
+          const now = Date.now();
+          // Throttle to max 1 emit per second to avoid flooding backend and freezing chart
+          if (now - (lastIndicatorRequestRef.current || 0) > 1000) {
+            lastIndicatorRequestRef.current = now;
+            const sentTypes = new Set();
+            activeIndicators.forEach((ind) => {
+              const indType = typeof ind === "object" ? ind.type : ind;
+              if (!indType || sentTypes.has(indType)) return;
+
+              const requestKey = getIndicatorRequestKey(
+                indType,
+                selectedCurrency,
+                timeframeValue,
+              );
+              if (indicatorBlockedRef.current.has(requestKey)) return;
+
+              sentTypes.add(indType);
+              emit(EVENTS.INDICATOR.LIVE, {
+                symbol: selectedCurrency?.name,
+                interval: timeframeValue,
+                type: indType,
+                exchange: selectedCurrency?.segment,
+                requestId: ind?.id,
+              });
+            });
+          }
+        }
+      });
+    },
+    // Note: We've combined liveTick logic into a single handleLiveTick,
+    handleLiveIndicator: (payload) => {
+      console.log("[INDICATOR] liveIndicatorResponse payload:", payload);
+      if (!payload?.type) return;
+
+      const activeSymbol = normalize(
+        selectedCurrency?.name || selectedCurrency?.symbol,
+      );
+      const payloadSymbol = normalize(payload?.symbol);
+      if (payload?.symbol && !isSameSymbolName(payloadSymbol, activeSymbol))
+        return;
+
+      const indicatorType = payload.type;
+      const requestKey = getIndicatorRequestKey(
+        indicatorType,
+        selectedCurrency,
+        timeframeValue,
+      );
+
+      if (payload.success === false) {
+        if (indicatorBlockedRef.current.has(requestKey)) return;
+
+        const failureCount =
+          (indicatorFailureCountRef.current.get(requestKey) || 0) + 1;
+        indicatorFailureCountRef.current.set(requestKey, failureCount);
+        console.warn(
+          `[INDICATOR FAILURE] ${indicatorType} ${failureCount}/${MAX_INDICATOR_FAILURES}`,
+          payload.error,
+        );
+
+        if (failureCount >= MAX_INDICATOR_FAILURES) {
+          indicatorBlockedRef.current.add(requestKey);
+          console.warn(`[INDICATOR BLOCKED] ${indicatorType}`);
+
+          if (!indicatorErrorShownRef.current.has(requestKey)) {
+            indicatorErrorShownRef.current.add(requestKey);
+            Swal.fire({
+              icon: "error",
+              title: "Indicator unavailable",
+              text:
+                payload.error || `${indicatorType} could not be calculated.`,
+              confirmButtonText: "OK",
+              background: "var(--bg-secondary)",
+              color: "var(--text-primary)",
+            });
+          }
+        }
+        return;
+      }
+
+      indicatorFailureCountRef.current.delete(requestKey);
+
+      const dataArray = payload.data;
+      if (!Array.isArray(dataArray) || dataArray.length === 0) return;
+      const lastPoint = dataArray[dataArray.length - 1];
+      if (!lastPoint) return;
+
+      const pointTime = Number(
+        currentCandleRef.current?.time ?? lastPoint.time,
+      );
+      if (isNaN(pointTime)) return;
+
+      selectedIndicatorRef.current.forEach((inst) => {
+        const instType = typeof inst === "object" ? inst.type : inst;
+        const instId = typeof inst === "object" ? inst.id : inst;
+        if (instType !== indicatorType) return;
+        const seriesGroup = indicatorSeriesRef.current?.[instId];
+        if (!seriesGroup || chartDisposedRef.current) return;
+
+        const staticKeys = [
+          "upper",
+          "middle",
+          "lower",
+          "upperBand",
+          "middleBand",
+          "lowerBand",
+          "overboughtFill",
+          "oversoldFill",
+          "bandBackground",
+          "bgFill",
+          "zeroLine",
+          "upperRSI",
+          "middleRSI",
+          "lowerRSI",
+          "zero",
+          "perfectCompression",
+          "compressionThreshold",
+          "neutral",
+        ];
+
+        Object.entries(seriesGroup).forEach(([lineName, series]) => {
+          if (lineName.startsWith("_")) {
+            if (instType === "SMA_RIBBON_DISTANCE" && lineName === "_bg") {
+              try {
+                const tightCount = lastPoint.tightBarCount ?? 0;
+                const cScore =
+                  lastPoint.compressionScore ?? lastPoint.oscillator ?? 0;
+                const minTight = 20;
+                const compThresh = 80;
+                let bgColor = "transparent";
+                if (tightCount >= minTight) bgColor = "rgba(255,0,255,0.13)";
+                else if (cScore >= compThresh) bgColor = "rgba(0,255,255,0.08)";
+
+                series.update({
+                  time: pointTime,
+                  value: bgColor !== "transparent" ? 100000 : 0,
+                  color: bgColor,
+                });
+              } catch (e) {}
+            }
+            return;
+          }
+          if (!series || typeof series.update !== "function") return;
+
+          let mappedLineName = lineName;
+          if (instType === "SMA_RIBBON_DISTANCE") {
+            if (
+              lineName === "compressionScore" &&
+              lastPoint.compressionScore === undefined
+            )
+              mappedLineName = "oscillator";
+            if (lineName === "maxDistance")
+              mappedLineName = "maximumRibbonDistance";
+            if (lineName === "avgDistance")
+              mappedLineName = "averagePairDistance";
+          }
+
+          let value;
+          // First, check if the payload provides a dynamic value for this line
+          const dynamicValue =
+            lastPoint[mappedLineName] ??
+            lastPoint[mappedLineName + "Band"] ??
+            (mappedLineName === indicatorType.toLowerCase()
+              ? lastPoint[mappedLineName]
+              : undefined);
+
+          if (dynamicValue !== undefined && dynamicValue !== null) {
+            value = dynamicValue;
+          } else if (
+            lineName === "oscillatorFill" &&
+            instType === "SUPERSMOOTHER"
+          ) {
+            value = lastPoint.oscillator;
+          } else if (staticKeys.includes(lineName)) {
+            // Fallback to static style lines (e.g., RSI 70/30) if no dynamic data is provided
+            const style =
+              indicatorStyleRef.current?.[instId] ||
+              indicatorStyleRef.current?.[instType];
+            if (
+              lineName === "upper" ||
+              lineName === "upperBand" ||
+              lineName === "upperRSI" ||
+              lineName === "overboughtFill" ||
+              lineName === "bandBackground" ||
+              lineName === "bgFill"
+            ) {
+              value =
+                instType === "CCI"
+                  ? (style?.upperBand?.value ?? 100)
+                  : instType === "RSI"
+                    ? (style?.upperRSI?.value ?? 70)
+                    : (style?.upper?.value ?? 70);
+            } else if (
+              lineName === "middle" ||
+              lineName === "middleBand" ||
+              lineName === "middleRSI"
+            ) {
+              value =
+                instType === "CCI"
+                  ? (style?.middleBand?.value ?? 0)
+                  : instType === "RSI"
+                    ? (style?.middleRSI?.value ?? 50)
+                    : (style?.middle?.value ?? 50);
+            } else if (
+              lineName === "lower" ||
+              lineName === "lowerBand" ||
+              lineName === "lowerRSI" ||
+              lineName === "oversoldFill"
+            ) {
+              value =
+                instType === "CCI"
+                  ? (style?.lowerBand?.value ?? -100)
+                  : instType === "RSI"
+                    ? (style?.lowerRSI?.value ?? 30)
+                    : (style?.lower?.value ?? 30);
+            } else if (lineName === "zeroLine" || lineName === "zero") {
+              value = style?.zeroLine?.value ?? style?.zero?.value ?? 0;
+            } else if (lineName === "perfectCompression") {
+              value = style?.perfectCompression?.value ?? 100;
+            } else if (lineName === "compressionThreshold") {
+              value = style?.compressionThreshold?.value ?? 80;
+            } else if (lineName === "neutral") {
+              value = style?.neutral?.value ?? 50;
+            }
+          } else {
+            // Check if it's explicitly configured as a static reference line
+            const lineStyleCfg =
+              indicatorStyleRef.current?.[instId]?.[lineName] ||
+              indicatorStyleRef.current?.[instType]?.[lineName];
+
+            if (lineStyleCfg?.value !== undefined) {
+              value = lineStyleCfg.value;
+            } else {
+              // For single-line indicators when lineName doesn't exactly match
+              value = lastPoint.value ?? lastPoint[indicatorType.toLowerCase()];
+            }
+          }
+
+          if (value == null || !Number.isFinite(Number(value))) return;
+
+          try {
+            const updateObj = { time: pointTime, value: Number(value) };
+            if (lineName === "histogram") {
+              const isRising = Number(value) >= 0;
+              updateObj.color =
+                lastPoint.histogramColor ||
+                lastPoint.color ||
+                (isRising ? "rgba(0,255,127,0.6)" : "rgba(255,0,0,0.6)");
+            } else if (
+              lineName === "directionalScore" &&
+              instType === "HEALTHY_BOX"
+            ) {
+              let hColor = "rgba(128,128,128,1)";
+              if (lastPoint.healthy || lastPoint.healthySignal) {
+                hColor =
+                  lastPoint.bull || lastPoint.bullSignal
+                    ? "rgba(0,255,0,1)"
+                    : "rgba(255,0,0,1)";
+              }
+              updateObj.color = hColor;
+            } else if (
+              lineName === "oscillator" &&
+              instType === "SUPERSMOOTHER"
+            ) {
+              const isRising = Number(value) >= 0;
+              updateObj.color =
+                lastPoint.color ||
+                (isRising ? "rgba(0, 255, 0, 1)" : "rgba(255, 20, 147, 1)");
+            } else if (
+              lineName === "compressionScore" &&
+              instType === "SMA_RIBBON_DISTANCE"
+            ) {
+              const styleCfg =
+                indicatorStyleRef.current?.[instId]?.compressionScore ||
+                indicatorStyleRef.current?.[instType]?.compressionScore;
+
+              const c0 = styleCfg?.color0 || "rgba(255,0,255,1)";
+              const c1 = styleCfg?.color1 || "rgba(0,255,255,1)";
+              const c2 = styleCfg?.color2 || "rgba(255,165,0,1)";
+              const c3 = styleCfg?.color3 || "rgba(128,128,128,1)";
+
+              const tightCount = lastPoint.tightBarCount ?? 0;
+              const indicatorConfig =
+                indicatorConfigs[instId] || indicatorConfigDefault[instType];
+              const minTight = indicatorConfig?.minimumTightBars || 20;
+              const compThresh = indicatorConfig?.compressionThreshold || 80;
+
+              let pointColor = c3;
+              if (tightCount >= minTight) {
+                pointColor = c0;
+              } else if (Number(value) >= compThresh) {
+                pointColor = c1;
+              } else if (Number(value) >= 50) {
+                pointColor = c2;
+              }
+
+              updateObj.color = pointColor;
+            } else if (lastPoint.color) {
+              updateObj.color = lastPoint.color;
+            }
+            series.update(updateObj);
+
+            // Update associated data array used for canvas drawings (clouds/bands)
+            const dataArrayKey = `${lineName}Data`;
+            if (
+              seriesGroup[dataArrayKey] &&
+              Array.isArray(seriesGroup[dataArrayKey])
+            ) {
+              const arr = seriesGroup[dataArrayKey];
+              const last = arr[arr.length - 1];
+              if (last && last.time === pointTime) {
+                last.value = Number(value);
+              } else {
+                arr.push({ time: pointTime, value: Number(value) });
+              }
+            }
+          } catch (e) {
+            if (
+              !e?.message?.includes("oldest data") &&
+              !e?.message?.includes("Object is disposed")
+            ) {
+              console.warn(
+                `Indicator update failed [${indicatorType}][${instId}]:`,
+                e.message,
+              );
+            }
+          }
+        });
+
+        // Trigger the custom cloud/band drawing function if the indicator has one (e.g., KC, DC, VWAP, BB)
+        if (
+          seriesGroup._drawCloud &&
+          typeof seriesGroup._drawCloud === "function"
+        ) {
+          seriesGroup._drawCloud();
+        }
+      });
+    },
+  });
+
+  // Keep emitRef and socketRef up to date
+  useEffect(() => {
+    emitRef.current = emit;
+    socketRef.current = {
+      emit,
+      once,
+      off,
+      connected,
+      socket: dataSocket,
+      indicatorSocket: getStrategySocket(),
+    };
+  }, [connected, dataSocket, emit, off, once]);
+
+  useEffect(() => {
+    const previousContext = liveIndicatorContextRef.current;
+    const nextContext = {
+      symbol: selectedCurrency?.name || selectedCurrency?.symbol,
+      interval: timeframeValue,
+      exchange: selectedCurrency?.segment,
+    };
+
+    const hasContextChanged =
+      previousContext.symbol !== nextContext.symbol ||
+      previousContext.interval !== nextContext.interval ||
+      previousContext.exchange !== nextContext.exchange;
+
+    if (!hasContextChanged) return;
+
+    const requestIdsByType = new Map();
+    selectedIndicatorRef.current.forEach((indicator) => {
+      const type = typeof indicator === "object" ? indicator?.type : indicator;
+      const requestId =
+        typeof indicator === "object" ? indicator?.id : indicator;
+      if (type && requestId && !requestIdsByType.has(type)) {
+        requestIdsByType.set(type, requestId);
+      }
+    });
+
+    requestIdsByType.forEach((requestId, type) => {
+      const unsubscribePayload = {
+        symbol: previousContext.symbol,
+        interval: previousContext.interval,
+        type,
+        requestId,
+        exchange: previousContext.exchange,
+      };
+      console.log(
+        "[INDICATOR] unsubscribeIndicator payload:",
+        unsubscribePayload,
+      );
+      emit(EVENTS.INDICATOR.LIVE_UNSUBSCRIBE, unsubscribePayload);
+    });
+
+    liveIndicatorContextRef.current = nextContext;
+  }, [
+    emit,
+    selectedCurrency?.name,
+    selectedCurrency?.segment,
+    selectedCurrency?.symbol,
+    timeframeValue,
+  ]);
+
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    const handleVisibleRangeChange = (range) => {
+      historicalVisibleRangeRef.current = range || null;
+      if (
+        !range ||
+        historyBackfillInFlightRef.current ||
+        !socketRef.current?.socket?.connected ||
+        !candlesRef.current?.length
+      ) {
+        return;
+      }
+
+      const barsInfo =
+        seriesRef.current &&
+        typeof seriesRef.current.barsInLogicalRange === "function"
+          ? seriesRef.current.barsInLogicalRange(range)
+          : null;
+      const visibleTimeRange = chartRef.current.timeScale().getVisibleRange();
+      const visibleFromTime = Number(visibleTimeRange?.from);
+      const visibleToTime = Number(visibleTimeRange?.to);
+      const firstLoadedTime = Number(candlesRef.current[0]?.time);
+      const lastLoadedTime = Number(
+        candlesRef.current[candlesRef.current.length - 1]?.time,
+      );
+      const shouldLoadOlder =
+        (Number.isFinite(visibleFromTime) &&
+          Number.isFinite(firstLoadedTime) &&
+          visibleFromTime <= firstLoadedTime) ||
+        range.from <= 30 ||
+        (barsInfo ? barsInfo.barsBefore < 50 : range.from <= 25);
+      const shouldLoadNewer =
+        (Number.isFinite(visibleToTime) &&
+          Number.isFinite(lastLoadedTime) &&
+          visibleToTime >= lastLoadedTime) ||
+        (barsInfo
+          ? barsInfo.barsAfter < 50
+          : range.to >= candlesRef.current.length - 25);
+
+      if (shouldLoadOlder) {
+        requestOlderHistoricalChunk();
+      } else if (shouldLoadNewer) {
+        requestNewerHistoricalChunk();
+      }
+    };
+
+    const timeScale = chartRef.current.timeScale();
+    const handleVisibleTimeRangeChange = () => {
+      handleVisibleRangeChange(timeScale.getVisibleLogicalRange());
+    };
+
+    timeScale.subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+    timeScale.subscribeVisibleTimeRangeChange(handleVisibleTimeRangeChange);
+    return () => {
+      try {
+        timeScale.unsubscribeVisibleLogicalRangeChange(
+          handleVisibleRangeChange,
+        );
+        timeScale.unsubscribeVisibleTimeRangeChange(
+          handleVisibleTimeRangeChange,
+        );
+      } catch (e) {}
+    };
+  }, [
+    connected,
+    mainChartLoading,
+    requestOlderHistoricalChunk,
+    requestNewerHistoricalChunk,
+  ]);
+
+  // Main useEffect for chart type/data changes
+  useEffect(() => {
+    if (!selectedCurrency || !timeframeValue) return;
+    if (suppressNextHistoricalReloadRef.current) {
+      suppressNextHistoricalReloadRef.current = false;
+      return;
+    }
+
+    clearIndicatorSeries();
+
+    seriesReadyRef.current = false; // Prevent live ticks from squishing the old chart data
+
+    // Show transition overlay whenever symbol/timeframe/chartType changes
+    symbolTransitioningRef.current = true;
+    setSymbolTransitioning(true);
+
+    if (connected && selectedCurrency && timeframeValue) {
+      requestHistoricalData();
+      requestLiveTick();
+    }
+
+    setMainChartLoading(true);
+
+    const timeout = setTimeout(() => {
+      setMainChartLoading(false);
+    }, 10000);
+
+    return () => clearTimeout(timeout);
+  }, [
+    selectedCurrency,
+    timeframeValue,
+    chartType,
+    fromDate,
+    toDate,
+    connected,
+    requestHistoricalData,
+    requestLiveTick,
+  ]);
+
+  useEffect(() => {
+    if (!selectedCurrency || !timeframeValue) return;
+    let intervalId;
+    const delay = Math.max(
+      0,
+      Math.ceil(Date.now() / 60000) * 60000 + 3000 - Date.now(),
+    );
+    const run = () => {
+      if (document.visibilityState === "visible" && navigator.onLine)
+        requestLastThreeCandles();
+    };
+    const timeoutId = window.setTimeout(() => {
+      run();
+      intervalId = window.setInterval(run, 60000);
+    }, delay);
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (intervalId) window.clearInterval(intervalId);
+      reconciliationAbortRef.current?.abort();
+      reconciliationRunningRef.current = false;
+      reconciliationGenerationRef.current += 1;
+    };
+  }, [
+    selectedCurrency?.symbol,
+    selectedCurrency?.name,
+    selectedCurrency?.exchange,
+    selectedCurrency?.token,
+    timeframeValue,
+    requestLastThreeCandles,
+  ]);
+
+  useEffect(() => {
+    let lastRecoveryAt = 0;
+    const recover = () => {
+      if (
+        document.visibilityState !== "visible" ||
+        !navigator.onLine ||
+        Date.now() - lastRecoveryAt < 2000
+      )
+        return;
+      lastRecoveryAt = Date.now();
+      requestLastThreeCandles();
+      requestLiveTick();
+    };
+    const visibility = () => {
+      if (document.visibilityState === "visible") recover();
+    };
+    window.addEventListener("focus", recover);
+    window.addEventListener("online", recover);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("focus", recover);
+      window.removeEventListener("online", recover);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, [requestLastThreeCandles, requestLiveTick]);
+  const zoomCharts = (delta) => {
+    const charts = [
+      chartRef.current,
+      ...Object.values(panesRef.current)?.map((p) => p.chart),
+    ].filter(Boolean);
+    charts.forEach((chart) => {
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (!range) return;
+      chart.timeScale().setVisibleLogicalRange({
+        from: range.from + delta,
+        to: range.to - delta,
+      });
+    });
+  };
+
+  const zoomIn = () => zoomCharts(10);
+  const zoomOut = () => zoomCharts(-10);
+  const resetZoom = () => {
+    const charts = [
+      chartRef.current,
+      ...Object.values(panesRef.current)?.map((p) => p.chart),
+    ].filter(Boolean);
+    charts.forEach((chart) => chart.timeScale().fitContent());
+  };
+
+  const [goToMarker, setGoToMarker] = useState(null); // { x, label }
+  const goToMarkerCleanupRef = useRef(null);
+  const ignoreNextScrollRef = useRef(false);
+
+  const applyGoToTarget = (targetDate) => {
+    if (
+      !chartRef.current ||
+      !seriesRef.current ||
+      chartDisposedRef.current ||
+      !candlesRef.current?.length
+    ) {
+      return false;
+    }
+
+    const targetTimeSec = Math.floor(
+      Date.UTC(
+        targetDate.getFullYear(),
+        targetDate.getMonth(),
+        targetDate.getDate(),
+        targetDate.getHours(),
+        targetDate.getMinutes(),
+        targetDate.getSeconds(),
+      ) / 1000,
+    );
+    const isMidnight =
+      targetDate.getHours() === 0 && targetDate.getMinutes() === 0;
+    let closestIndex = 0;
+
+    if (isMidnight) {
+      closestIndex = candlesRef.current.findIndex(
+        (c) => c.time >= targetTimeSec,
+      );
+      if (closestIndex === -1) closestIndex = candlesRef.current.length - 1;
+    } else {
+      let minDiff = Infinity;
+      for (let i = 0; i < candlesRef.current.length; i++) {
+        const candle = candlesRef.current[i];
+        const diff = Math.abs(candle.time - targetTimeSec);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestIndex = i;
+        }
+      }
+    }
+
+    const closestCandle = candlesRef.current[closestIndex];
+    const timeScale = chartRef.current.timeScale();
+    const targetLogicalIndex = timeScale.timeToIndex(closestCandle?.time, true);
+    if (!closestCandle || !Number.isFinite(targetLogicalIndex)) return false;
+
+    ignoreNextScrollRef.current = true;
+    timeScale.setVisibleLogicalRange({
+      from: Math.max(0, targetLogicalIndex - 25),
+      to: targetLogicalIndex + 25,
+    });
+    setMainChartAutoScale(true);
+    setTimeout(() => {
+      ignoreNextScrollRef.current = false;
+    }, 500);
+
+    requestAnimationFrame(() => {
+      if (!chartRef.current || !containerRef.current || chartDisposedRef.current) {
+        return;
+      }
+
+      let xPixel = null;
+      let yPixel = null;
+      try {
+        xPixel = chartRef.current
+          .timeScale()
+          .timeToCoordinate(closestCandle.time);
+        if (typeof seriesRef.current?.priceToCoordinate === "function") {
+          yPixel = seriesRef.current.priceToCoordinate(closestCandle.high);
+        }
+      } catch (e) {
+        console.error("[GoTo] Error getting coordinate", e);
+      }
+
+      const candleLocalMs = (closestCandle.time - IST_OFFSET) * 1000;
+      const candleDateIST = new Date(candleLocalMs + 5.5 * 60 * 60 * 1000);
+      const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+      ];
+      const dayName = weekdays[candleDateIST.getUTCDay()];
+      const dd = String(candleDateIST.getUTCDate()).padStart(2, "0");
+      const mon = months[candleDateIST.getUTCMonth()];
+      const yr = candleDateIST.getUTCFullYear();
+      const hh = String(candleDateIST.getUTCHours()).padStart(2, "0");
+      const mm = String(candleDateIST.getUTCMinutes()).padStart(2, "0");
+      const isIntraday = [
+        "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h",
+        "60m", "120m", "240m",
+      ].includes(timeframeValue);
+      const label = isIntraday
+        ? `${dayName} ${dd} ${mon} '${String(yr).slice(-2)}\n${hh}:${mm}`
+        : `${dayName} ${dd} ${mon} '${String(yr).slice(-2)}`;
+
+      if (xPixel == null || !Number.isFinite(xPixel)) {
+        xPixel = containerRef.current.getBoundingClientRect().width / 2;
+      }
+
+      if (goToMarkerCleanupRef.current) {
+        clearTimeout(goToMarkerCleanupRef.current);
+        goToMarkerCleanupRef.current = null;
+      }
+      setGoToMarker({ x: xPixel, y: yPixel, label, time: closestCandle.time });
+      goToMarkerCleanupRef.current = setTimeout(() => {
+        setGoToMarker(null);
+        goToMarkerCleanupRef.current = null;
+      }, 10000);
+    });
+
+    return true;
+  };
+
+  const handleGoToDate = (targetDate) => {
+    if (!chartRef.current) return;
+
+    if (targetDate === "latest") {
+      pendingGotoRef.current = null;
+      const todayStr = getTodayDateString();
+      const d = getInitialLookbackDate(timeframeValue);
+      const minDate = new Date("2024-10-01");
+      const initialFrom =
+        d < minDate ? "2024-10-01" : d.toISOString().split("T")[0];
+
+      if (toDate !== todayStr) {
+        setMainChartLoading(true);
+        handleSetFromDate(initialFrom);
+        setToDate(todayStr);
+        setTimeout(() => {
+          if (chartRef.current) chartRef.current.timeScale().scrollToRealTime();
+        }, 1000);
+      } else {
+        chartRef.current.timeScale().scrollToRealTime();
+      }
+      return;
+    }
+
+    const targetTimeMs = targetDate.getTime();
+    const targetDayStart = Math.floor(
+      Date.UTC(
+        targetDate.getFullYear(),
+        targetDate.getMonth(),
+        targetDate.getDate(),
+      ) / 1000,
+    );
+    const targetDayEnd = targetDayStart + 24 * 60 * 60 - 1;
+    const firstLoadedTime = Number(candlesRef.current?.[0]?.time);
+    const lastLoadedTime = Number(
+      candlesRef.current?.[candlesRef.current.length - 1]?.time,
+    );
+    const isTargetLoaded =
+      Number.isFinite(firstLoadedTime) &&
+      Number.isFinite(lastLoadedTime) &&
+      targetDayEnd >= firstLoadedTime &&
+      targetDayStart <= lastLoadedTime;
+
+    if (isTargetLoaded) {
+      pendingGotoRef.current = null;
+      applyGoToTarget(targetDate);
+      return;
+    }
+
+    const chunkDays = getBackfillChunkDays(timeframeValue);
+    const windowStart = new Date(targetTimeMs);
+    windowStart.setDate(windowStart.getDate() - Math.max(15, chunkDays));
+    const windowStartStr =
+      windowStart.toISOString().split("T")[0] < MIN_HISTORICAL_DATE
+        ? MIN_HISTORICAL_DATE
+        : windowStart.toISOString().split("T")[0];
+    const windowEnd = new Date(targetTimeMs);
+    windowEnd.setDate(windowEnd.getDate() + Math.max(15, chunkDays));
+    const today = new Date();
+    const windowEndStr =
+      windowEnd > today
+        ? today.toISOString().split("T")[0]
+        : windowEnd.toISOString().split("T")[0];
+    const requestId = `goto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    pendingGotoRef.current = {
+      targetDate,
+      requestId,
+      fromDate: windowStartStr,
+      toDate: windowEndStr,
+    };
+    console.log("[GoTo] request", {
+      requestId,
+      targetDate,
+      fromDate: windowStartStr,
+      toDate: windowEndStr,
+    });
+    setMainChartLoading(true);
+    const requested = requestHistoricalData(
+      true,
+      { fromDate: windowStartStr, toDate: windowEndStr },
+      { mergeMode: "replace", requestId },
+    );
+    if (!requested && pendingGotoRef.current?.requestId === requestId) {
+      pendingGotoRef.current = null;
+      setMainChartLoading(false);
+    }
+  };
+  // Continually track marker position to prevent any detachment during layout shifts
+  useEffect(() => {
+    if (!goToMarker || !goToMarker.time || !chartRef.current) return;
+    let animationFrameId;
+    const updatePosition = () => {
+      try {
+        const newX = chartRef.current
+          .timeScale()
+          .timeToCoordinate(goToMarker.time);
+        if (newX !== null) {
+          setGoToMarker((prev) => {
+            if (prev && prev.x !== newX) return { ...prev, x: newX };
+            return prev;
+          });
+        }
+      } catch (e) {}
+      animationFrameId = requestAnimationFrame(updatePosition);
+    };
+    animationFrameId = requestAnimationFrame(updatePosition);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [goToMarker?.time]);
+
+  // Attach scroll/click dismiss listeners to the chart timescale
+  useEffect(() => {
+    if (!chartRef.current) return;
+    const ts = chartRef.current.timeScale();
+
+    const handleScroll = () => {
+      if (ignoreNextScrollRef.current) return;
+
+      if (goToMarkerCleanupRef.current) {
+        clearTimeout(goToMarkerCleanupRef.current);
+        goToMarkerCleanupRef.current = null;
+      }
+      setGoToMarker(null);
+    };
+
+    ts.subscribeVisibleLogicalRangeChange(handleScroll);
+    return () => {
+      try {
+        ts.unsubscribeVisibleLogicalRangeChange(handleScroll);
+      } catch (e) {}
+    };
+  }, []);
+
+  const isSidePanelOpen =
+    activeTab === `Alerts` || isWatchlistOpen || isDetailsOpen || isDepthOpen || isObjectTreeOpen;
+
+  return (
+    <>
+      <section
+        className="trading-view-wrapper overflow-x-hidden"
+        style={{
+          background: "var(--bg-primary)",
+          height: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          ...(isFullscreen
+            ? {
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 9999,
+              }
+            : {}),
+        }}
+      >
+        <div
+          className="container-fluid p-0 m-0"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            width: "100%",
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              width: "100%",
+              flex: 1,
+              minHeight: 0,
+            }}
+          >
+            <style>{`
+              @media (max-width: 768px) {
+                .left-panel-mobile.is-open {
+                  position: absolute !important;
+                  right: 0;
+                  top: 0;
+                  z-index: 1000;
+                  background: var(--bg-primary);
+                  width: 100% !important;
+                  height: 100% !important;
+                  box-shadow: -2px 0 10px rgba(0,0,0,0.5);
+                }
+                .right-sidebar-mobile {
+                  width: 40px !important;
+                }
+                .mobile-scrollable-chart {
+                  min-width: 600px !important;
+                }
+                .buy-sell-btn {
+                  padding: 2px 6px !important;
+                  font-size: 14px !important;
+                }
+              }
+            `}</style>
+            {/* Main Chart Area */}
+            <div
+              style={{
+                flex: 1,
+                order: 1,
+                minWidth: 0, // important to prevent flex items from overflowing
+                borderLeft: "none",
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+                transition: "border-color 0.3s ease",
+              }}
+            >
+              <div
+                style={{
+                  flex: 1,
+                  display:
+                    activeTab === "Chart" || activeTab === "Alerts"
+                      ? "flex"
+                      : "none",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  className="trading-chart-header"
+                  style={{
+                    padding: 0,
+                    flexShrink: 0,
+                    background: "var(--bg-primary)",
+                  }}
+                >
+                  <ChartHeader
+                    timeframeValue={timeframeValue}
+                    setTimeframeValue={setTimeframeValue}
+                    selectedCurrency={selectedCurrency}
+                    setSelectedCurrency={handleSetSelectedCurrency}
+                    setChartType={setChartType}
+                    chartType={chartType}
+                    selectedIndicator={selectedIndicator}
+                    setSelectedIndicator={setSelectedIndicator}
+                    toggleIndicator={toggleIndicator}
+                    fromDate={fromDate}
+                    toDate={toDate}
+                    setFromDate={handleSetFromDate}
+                    setToDate={setToDate}
+                    alertResult={matchedCoins}
+                    addAlert={addAlert}
+                    onSelectStrategy={handleSelectSavedStrategy}
+                    onToggleStrategyVisuals={handleToggleStrategyVisuals}
+                    onOpenStrategyEditor={handleOpenStrategyEditor}
+                    areStrategyVisualsVisible={areStrategyVisualsVisible}
+                    hasActiveStrategy={Boolean(activeStrategyRecord?.id)}
+                    isFullscreen={isFullscreen}
+                    onToggleFullscreen={() => setIsFullscreen((prev) => !prev)}
+                    onGoToDate={handleGoToDate}
+                    onAgentClick={handleToggleAgentPanel}
+                    onCodeClick={() => {
+                      setIsAgentPanelOpen(false);
+                      setIsCodeEditorOpen((prev) => !prev);
+                    }}
+                    onOpenScanner={() => {
+                      // Open details panel, close watchlist
+                      setIsDetailsOpen(true);
+                      setIsWatchlistOpen(false);
+                      setIsObjectTreeOpen(false);
+                      if (activeTab === "Alerts") setActiveTab("Chart");
+                      setOpenScannerTrigger((prev) => prev + 1);
+                    }}
+                  />
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    flex: 1,
+                    overflowX: "hidden",
+                    overflowY: "hidden",
+                    background: "var(--bg-secondary)",
+                    gap: "4px",
+                    paddingTop: "4px",
+                  }}
+                >
+                  <DrawingToolbar
+                    activeTool={activeTool}
+                    setActiveTool={setActiveTool}
+                    clearAllDrawings={clearAllDrawings}
+                    cursorStyle={chartCursorStyle}
+                    setCursorStyle={setChartCursorStyle}
+                  />
+                  <div
+                    className="chart-and-panes-wrapper mobile-scrollable-chart"
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      position: "relative",
+                      minHeight: 0,
+                      background: "var(--bg-primary)",
+                      borderTopLeftRadius: "10px",
+                      borderTopRightRadius: "10px",
+                    }}
+                  >
+                    {/* main chart */}
+                    <div
+                      ref={containerRef}
+                      style={{
+                        width: "100%",
+                        flex: 1,
+                        position: "relative",
+                        overflow: "hidden",
+                        display: "flex",
+                        flexDirection: "column",
+                        minHeight: 0,
+                        cursor:
+                          activeTool === "cursor"
+                            ? chartCursorStyle === "arrow"
+                              ? "default"
+                              : chartCursorStyle === "dot"
+                                ? "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Ccircle cx='8' cy='8' r='3' fill='white' stroke='black'/%3E%3C/svg%3E\") 8 8, crosshair"
+                                : "crosshair"
+                            : activeTool
+                              ? "crosshair"
+                              : "default",
+                      }}
+                      onClick={() => setGoToMarker(null)}
+                    >
+                      <DrawingToolbox
+                        selectedLine={selectedLine}
+                        position={toolboxPos}
+                        onUpdate={updateLine}
+                        onDelete={deleteLine}
+                        onClose={closeToolbox}
+                      />
+
+                      {/* Go To Date Tooltip Overlay  */}
+                      {goToMarker && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: goToMarker.x,
+                            height:
+                              goToMarker.y != null ? goToMarker.y : "100%",
+                            zIndex: 200,
+                            pointerEvents: "none",
+                          }}
+                        >
+                          {/* vertical dashed line */}
+                          <div
+                            style={{
+                              width: 1,
+                              height: "100%",
+                              position: "absolute",
+                              top: 0,
+                              left: 0,
+                              borderLeft: "1px dashed #999",
+                              opacity: 0.6,
+                              pointerEvents: "none",
+                            }}
+                          />
+                          {/* tooltip bubble */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              left: 0,
+                              top: goToMarker.y != null ? "auto" : 30,
+                              bottom: goToMarker.y != null ? 10 : "auto",
+                              transform: "translateX(-50%)",
+                              background: "var(--tooltip-bg, #3d3d3d)",
+                              borderRadius: 4,
+                              padding: "6px 12px",
+                              color: "var(--text-primary)",
+                              fontSize: 13,
+                              fontWeight: 500,
+                              fontFamily:
+                                "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+                              whiteSpace: "pre",
+                              textAlign: "center",
+                              boxShadow: "0 2px 4px rgba(0,0,0,0.2)",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {goToMarker.label}
+                            {/* tooltip caret/arrow */}
+                            <div
+                              style={{
+                                position: "absolute",
+                                bottom: -5,
+                                left: "50%",
+                                transform: "translateX(-50%)",
+                                width: 0,
+                                height: 0,
+                                borderLeft: "5px solid transparent",
+                                borderRight: "5px solid transparent",
+                                borderTop: "5px solid var(--tooltip-bg, #3d3d3d)",
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      {/* Unified chart transition overlay ?" covers during symbol/timeframe change */}
+                      {(symbolTransitioning ||
+                        mainChartLoading ||
+                        indicatorLoading) &&
+                        !isDeploying && (
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              zIndex: 55,
+                              display: "flex",
+                              flexDirection: "column",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              background: "transparent",
+                              backdropFilter: "none",
+                              pointerEvents:
+                                symbolTransitioning || mainChartLoading
+                                  ? "auto"
+                                  : "none",
+                              transition: "opacity 0.25s ease",
+                            }}
+                          >
+                            <Spinner />
+                          </div>
+                        )}
+                      {/* Strategy scanner overlay */}
+                      {isDeploying && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            zIndex: 60,
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            background: "rgba(0, 0, 0, 0.7)",
+                            backdropFilter: "blur(6px)",
+                            color: "var(--text-primary)",
+                          }}
+                        >
+                          <Spinner />
+                          <div
+                            style={{
+                              marginTop: "1rem",
+                              fontWeight: "bold",
+                              fontSize: "1.1rem",
+                            }}
+                          >
+                            Running Strategy Scanner...
+                          </div>
+                          {scannerProgressData &&
+                            scannerProgressData.total > 0 && (
+                              <div
+                                style={{
+                                  marginTop: "0.5rem",
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  alignItems: "center",
+                                  fontSize: "0.9rem",
+                                  color: "var(--text-secondary)",
+                                }}
+                              >
+                                <div>
+                                  {Math.round(
+                                    (scannerProgressData.processed /
+                                      scannerProgressData.total) *
+                                      100,
+                                  )}
+                                  %
+                                </div>
+                                {scannerProgressData.current_stock && (
+                                  <div
+                                    style={{
+                                      marginTop: "0.25rem",
+                                      fontSize: "0.8rem",
+                                      opacity: 0.8,
+                                    }}
+                                  >
+                                    Processing:{" "}
+                                    {scannerProgressData.current_stock}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                        </div>
+                      )}
+                      {/* No data overlay */}
+                      {noDataAvailable &&
+                        !symbolTransitioning &&
+                        !mainChartLoading && (
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              zIndex: 40,
+                              display: "flex",
+                              flexDirection: "column",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              background: "rgba(0, 0, 0, 0.6)",
+                              backdropFilter: "blur(4px)",
+                              color: "var(--text-primary)",
+                              textAlign: "center",
+                              padding: "20px",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: "1.25rem",
+                                fontWeight: "bold",
+                                marginBottom: "8px",
+                              }}
+                            >
+                              No Data Available
+                            </div>
+                            <div
+                              style={{
+                                fontSize: "0.875rem",
+                                color: "var(--text-secondary)",
+                              }}
+                            >
+                              There is no chart data available for{" "}
+                              {selectedCurrency?.name || "this symbol"} in the
+                              selected timeframe.
+                            </div>
+                          </div>
+                        )}
+                      {/* -------------------------------sub-header live Values----------------------- */}
+                      <div
+                        className="position-absolute top-0 start-0"
+                        style={{
+                          zIndex: 10,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                          padding: "8px",
+                        }}
+                      >
+                        <style>{`
+    @keyframes ping {
+      75%, 100% { transform: scale(2); opacity: 0; }
+    }
+    .dot-ping {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      opacity: 0.3;
+      animation: ping 1.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+    }
+  `}</style>
+
+                        <div className="d-flex align-items-center gap-2">
+                          {/* Symbol + Timeframe */}
+                          <span
+                            style={{
+                              fontSize: 13,
+                              color: "var(--text-secondary)",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {selectedCurrency?.name} : {timeframeValue}{" "}
+                            {selectedCurrency?.segment}
+                          </span>
+
+                          {/* Market status dot */}
+                          <div
+                            style={{
+                              position: "relative",
+                              width: 12,
+                              height: 12,
+                              flexShrink: 0,
+                            }}
+                          >
+                            <span
+                              className="dot-ping"
+                              style={{
+                                background: isMarketOpen
+                                  ? "#22c55e"
+                                  : "#f87171",
+                              }}
+                            />
+                            <span
+                              style={{
+                                display: "block",
+                                width: 12,
+                                height: 12,
+                                borderRadius: "50%",
+                                background: isMarketOpen
+                                  ? "#22c55e"
+                                  : "#f87171",
+                                position: "relative",
+                              }}
+                            />
+                          </div>
+
+                          {/* OHLC Values */}
+                          {/* OHLC Values - direct DOM, zero re-render */}
+                          <div
+                            className="d-none d-md-flex align-items-center gap-1"
+                            ref={ohlcvDisplayRef}
+                            style={{
+                              opacity: currentCandleRef.current ? 1 : 0,
+                              transition: "opacity 0.2s ease-in-out",
+                            }}
+                          >
+                            {SINGLE_VALUE_CHARTS.includes(chartType) ? (
+                              <span
+                                data-o=""
+                                data-val=""
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 500,
+                                  color: "var(--text-primary)",
+                                  padding: "2px 6px",
+                                }}
+                              >
+                                --
+                              </span>
+                            ) : (
+                              <>
+                                <span
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 500,
+                                    padding: "2px 5px",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  <span
+                                    style={{ color: "var(--text-secondary)" }}
+                                  >
+                                    O:{" "}
+                                  </span>
+                                  <span
+                                    data-o=""
+                                    data-val=""
+                                    style={{ color: "#22c55e" }}
+                                  >
+                                    --
+                                  </span>
+                                </span>
+                                <span
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 500,
+                                    padding: "2px 5px",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  <span
+                                    style={{ color: "var(--text-secondary)" }}
+                                  >
+                                    H:{" "}
+                                  </span>
+                                  <span
+                                    data-h=""
+                                    data-val=""
+                                    style={{ color: "#22c55e" }}
+                                  >
+                                    --
+                                  </span>
+                                </span>
+                                <span
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 500,
+                                    padding: "2px 5px",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  <span
+                                    style={{ color: "var(--text-secondary)" }}
+                                  >
+                                    L:{" "}
+                                  </span>
+                                  <span
+                                    data-l=""
+                                    data-val=""
+                                    style={{ color: "#22c55e" }}
+                                  >
+                                    --
+                                  </span>
+                                </span>
+                                <span
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 500,
+                                    padding: "2px 5px",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  <span
+                                    style={{ color: "var(--text-secondary)" }}
+                                  >
+                                    C:{" "}
+                                  </span>
+                                  <span
+                                    data-c=""
+                                    data-val=""
+                                    style={{ color: "#22c55e" }}
+                                  >
+                                    --
+                                  </span>
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Buy / Sell - Top Right */}
+                      {/* <div
+                        ref={actionButtonsRef}
+                        style={{
+                          position: "absolute",
+                          top: "8px",
+                          right: "85px",
+                          zIndex: 50,
+                          display: "flex",
+                          fontSize: "12px",
+                          alignItems: "center",
+                          gap: "6px",
+                          opacity: currentCandleRef.current ? 1 : 0,
+                          transition: "opacity 0.2s ease-in-out",
+                          pointerEvents: "auto",
+                        }}
+                      >
+                        <button
+                          className="buy-sell-btn"
+                          onClick={() => {
+                            const price = currentCandleRef.current?.close;
+                            const state = {
+                              stock: selectedCurrency?.name,
+                              action: "BUY",
+                              price: price,
+                            };
+                            const key = `trade_${Date.now()}`;
+                            sessionStorage.setItem(key, JSON.stringify(state));
+                            window.open(`/dashboard?tradeKey=${key}`, "_blank");
+                          }}
+                          style={{
+                            padding: "2px 6px",
+                            border: "1px solid #089981",
+                            background: "rgba(16, 185, 129, 0.15)",
+                            color: "#089981",
+                            borderRadius: "6px",
+                            cursor: "pointer",
+                            fontWeight: "600",
+                          }}
+                        >
+                          Buy @<span data-buy-price>--</span>
+                        </button>
+
+                        <button
+                          className="buy-sell-btn"
+                          onClick={() => {
+                            const price = currentCandleRef.current?.close;
+                            const state = {
+                              stock: selectedCurrency?.name,
+                              action: "SELL",
+                              price: price,
+                            };
+                            const key = `trade_${Date.now()}`;
+                            sessionStorage.setItem(key, JSON.stringify(state));
+                            window.open(`/dashboard?tradeKey=${key}`, "_blank");
+                          }}
+                          style={{
+                            padding: "2px 6px",
+                            border: "1px solid #F23645",
+                            background: "rgba(239, 68, 68, 0.15)",
+                            color: "#F23645",
+                            borderRadius: "6px",
+                            cursor: "pointer",
+                            fontWeight: "600",
+                          }}
+                        >
+                          Sell @<span data-sell-price>--</span>
+                        </button>
+                      </div> */}
+
+                      {/* -----------------INDICATOR BAR------------------- */}
+
+                      {selectedIndicator?.length > 0 && (
+                        <>
+                          {/* Main Chart Indicators */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: 40,
+                              left: 4,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 2,
+                              zIndex: 50,
+                            }}
+                          >
+                            {!areIndicatorLegendsCollapsed &&
+                              selectedIndicator
+                                .filter((ind) => {
+                                  if (ind.type === "VP") return true;
+                                  if (!PANE_INDICATORS.has(ind.type))
+                                    return true;
+                                  const paneDiv =
+                                    panesRef.current[
+                                      ind.id
+                                    ]?.pane?.getHTMLElement();
+                                  return !paneDiv;
+                                })
+                                .slice(
+                                  0,
+                                  visibleMainIndicatorLegendCount ??
+                                    Number.MAX_SAFE_INTEGER,
+                                )
+                                .map((ind) => {
+                                  const { id, type } = ind;
+                                  const value = liveIndicatorData[id];
+                                  return (
+                                    <IndicatorBar
+                                      key={id}
+                                      indicator={id}
+                                      type={type}
+                                      timeframeValue={timeframeValue}
+                                      value={value}
+                                      renderValue={(indId, val) =>
+                                        renderValue(indId, type, val)
+                                      }
+                                      indicatorVisibility={indicatorVisibility}
+                                      toggleIndicatorVisibility={
+                                        toggleIndicatorVisibility
+                                      }
+                                      removeIndicator={removeIndicator}
+                                      setActiveBarIndicator={
+                                        setActiveBarIndicator
+                                      }
+                                      setIndicatorProperty={
+                                        setIndicatorProperty
+                                      }
+                                      setActiveSourceIndicator={() =>
+                                        setActiveSourceIndicator(type)
+                                      }
+                                      setShowSourcePanel={setShowSourcePanel}
+                                      indicatorConfigDefault={
+                                        indicatorConfigDefault
+                                      }
+                                      indicatorConfigs={indicatorConfigs}
+                                    />
+                                  );
+                                })}
+                            {!areIndicatorLegendsCollapsed &&
+                              hiddenMainIndicatorLegendCount > 0 && (
+                                <span
+                                  className={`inline-flex h-[18px] w-fit items-center rounded-[4px] px-1 text-[10px] text-[var(--text-secondary)]`}
+                                >
+                                  +{hiddenMainIndicatorLegendCount}
+                                </span>
+                              )}
+                            <button
+                              onClick={() =>
+                                setAreIndicatorLegendsCollapsed(
+                                  (collapsed) => !collapsed,
+                                )
+                              }
+                              className={`inline-flex h-[18px] border-1 border-[var(--border-color)] rounded-sm w-fit items-center gap-1 px-1 text-[10px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]`}
+                            >
+                              {areIndicatorLegendsCollapsed ? (
+                                <>
+                                  <IoChevronUp />
+                                  <span>{totalIndicatorCount}</span>
+                                </>
+                              ) : (
+                                <IoChevronDown />
+                              )}
+                            </button>
+                          </div>
+
+                          {/* Pane Indicators (Portals) */}
+                          {!areIndicatorLegendsCollapsed &&
+                            selectedIndicator
+                              .filter((ind) => {
+                                if (ind.type === "VP") return false;
+                                if (!PANE_INDICATORS.has(ind.type))
+                                  return false;
+                                const paneDiv =
+                                  panesRef.current[
+                                    ind.id
+                                  ]?.pane?.getHTMLElement();
+                                return Boolean(paneDiv);
+                              })
+                              .map((ind) => {
+                                const { id, type } = ind;
+                                const value = liveIndicatorData[id];
+                                const paneDiv =
+                                  panesRef.current[id]?.pane?.getHTMLElement();
+
+                                if (!paneDiv) return null;
+                                const portalTarget =
+                                  paneDiv.tagName?.toLowerCase() === "tr"
+                                    ? paneDiv.querySelector("td") || paneDiv
+                                    : paneDiv;
+
+                                portalTarget.style.position = "relative"; // Ensure the pane is a positioning context
+
+                                return createPortal(
+                                  <div
+                                    style={{
+                                      position: "absolute",
+                                      top: 5,
+                                      left: 4,
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      gap: 2,
+                                      zIndex: 50,
+                                    }}
+                                  >
+                                    <IndicatorBar
+                                      indicator={id}
+                                      type={type}
+                                      timeframeValue={timeframeValue}
+                                      value={value}
+                                      renderValue={(indId, val) =>
+                                        renderValue(indId, type, val)
+                                      }
+                                      indicatorVisibility={indicatorVisibility}
+                                      toggleIndicatorVisibility={
+                                        toggleIndicatorVisibility
+                                      }
+                                      removeIndicator={removeIndicator}
+                                      setActiveBarIndicator={
+                                        setActiveBarIndicator
+                                      }
+                                      setIndicatorProperty={
+                                        setIndicatorProperty
+                                      }
+                                      setActiveSourceIndicator={() =>
+                                        setActiveSourceIndicator(type)
+                                      }
+                                      setShowSourcePanel={setShowSourcePanel}
+                                      indicatorConfigDefault={
+                                        indicatorConfigDefault
+                                      }
+                                      indicatorConfigs={indicatorConfigs}
+                                    />
+                                  </div>,
+                                  portalTarget,
+                                );
+                              })}
+                        </>
+                      )}
+
+                      {areStrategyVisualsVisible &&
+                        sandboxLegendGroups?.__sandbox_overlay__?.items
+                          ?.length > 0 && (
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: 62,
+                              left: 8,
+                              zIndex: 55,
+                              pointerEvents: "none",
+                            }}
+                          >
+                            {renderSandboxLegend(
+                              sandboxLegendGroups.__sandbox_overlay__,
+                            )}
+                          </div>
+                        )}
+
+                      {areStrategyVisualsVisible &&
+                        Object.values(sandboxLegendGroups)
+                          .filter(
+                            (group) =>
+                              group?.paneKey &&
+                              group.paneKey !== null &&
+                              group.items?.length > 0,
+                          )
+                          .map((group) => {
+                            const paneDiv =
+                              panesRef.current[
+                                group.paneKey
+                              ]?.pane?.getHTMLElement();
+
+                            if (!paneDiv) return null;
+                            const portalTarget =
+                              paneDiv.tagName?.toLowerCase() === "tr"
+                                ? paneDiv.querySelector("td") || paneDiv
+                                : paneDiv;
+
+                            portalTarget.style.position = "relative";
+
+                            return createPortal(
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: 5,
+                                  left: 8,
+                                  zIndex: 55,
+                                  pointerEvents: "none",
+                                }}
+                              >
+                                {renderSandboxLegend(group)}
+                              </div>,
+                              portalTarget,
+                            );
+                          })}
+                    </div>
+
+                    {/* Indicator Panes */}
+                    <div
+                      ref={paneContainerRef}
+                      style={{
+                        position: "relative",
+                        width: "100%",
+                        height: hasPaneIndicators
+                          ? getIndicatorChartProperties().height
+                          : 0,
+                        display: hasPaneIndicators ? "block" : "none",
+                      }}
+                    ></div>
+
+                    {/* Render Indicators */}
+                    <React.Fragment>{renderIndicators()}</React.Fragment>
+
+                    {/* ZOOM OVERLAY */}
+                    <div className="chart-zoom-overlay">
+                      <style>{`
+                    .chart-and-panes-wrapper .chart-zoom-overlay {
+                       opacity: 0;
+                       visibility: hidden;
+                       transition: all 0.2s ease;
+                    }
+                    .chart-and-panes-wrapper:hover .chart-zoom-overlay {
+                       opacity: 1;
+                       visibility: visible;
+                    }
+                    .chart-zoom-overlay {
+                       position: absolute;
+                       bottom: 24px;
+                       left: 50%;
+                       transform: translateX(-50%);
+                       z-index: 50;
+                       display: flex;
+                       align-items: center;
+                       gap: 8px;
+                       padding: 6px 10px;
+                       background: var(--bg-secondary); opacity: 0.9;
+                       backdrop-filter: blur(4px);
+                       border-radius: 8px;
+                       border: 1px solid var(--border-color);
+                    }
+                    .chart-zoom-overlay .zoom-btn {
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      width: 32px;
+                      height: 32px;
+                      border-radius: 6px;
+                      border: none;
+                      background: transparent;
+                      color: var(--text-primary);
+                      cursor: pointer;
+                      transition: all 0.15s ease;
+                    }
+                    .chart-zoom-overlay .zoom-btn:hover {
+                      background: var(--border-color);
+                      color: var(--text-primary);
+                    }
+                    .chart-zoom-overlay .zoom-btn:active {
+                      transform: scale(0.95);
+                    }
+                    .chart-zoom-overlay .zoom-divider {
+                      width: 1px;
+                      height: 18px;
+                      background: var(--border-color);
+                    }
+                  `}</style>
+                      <button
+                        onClick={zoomOut}
+                        title="Zoom out"
+                        className="zoom-btn"
+                      >
+                        <LuCircleMinus size={18} />
+                      </button>
+                      <div className="zoom-divider" />
+                      <button
+                        onClick={resetZoom}
+                        title="Reset zoom"
+                        className="zoom-btn"
+                      >
+                        <RiResetRightLine size={18} />
+                      </button>
+                      <div className="zoom-divider" />
+                      <button
+                        onClick={zoomIn}
+                        title="Zoom in"
+                        className="zoom-btn"
+                      >
+                        <LuCirclePlus size={18} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Resizer Separator between Chart and Opened Side Panel */}
+                  {!isFullscreen && isSidePanelOpen && (
+                    <div
+                      onMouseDown={handleSidePanelResizeStart}
+                      className="group/resizer relative flex h-full w-[6px] cursor-col-resize shrink-0 items-center justify-center select-none"
+                      style={{
+                        zIndex: 60,
+                        marginRight: "-3px",
+                        marginLeft: "-3px",
+                      }}
+                      title="Drag to resize panel (min: 200px)"
+                    >
+                      <div className="h-full w-[1px] bg-line transition-colors group-hover/resizer:bg-primary group-hover/resizer:w-[2px]" />
+                    </div>
+                  )}
+
+                  <div
+                    className={`left-panel-mobile ${!isFullscreen && isSidePanelOpen ? "is-open" : ""}`}
+                    style={{
+                      width: !isFullscreen && isSidePanelOpen ? `${sidePanelWidth}px` : "0px",
+                      opacity: !isFullscreen && isSidePanelOpen ? 1 : 0,
+                      overflow: "hidden",
+                      height: "100%",
+                      transition: isResizingSidePanel ? "none" :
+                        "width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                      flexShrink: 0,
+                      background: "var(--bg-primary)",
+                      borderTopLeftRadius: "10px",
+                    }}
+                  >
+                    <div style={{ width: `${sidePanelWidth}px`, height: "100%", background: "var(--bg-primary)", borderTopLeftRadius: "10px", overflow: "hidden" }}>
+                      <div style={{ display: activeTab === "Alerts" ? "block" : "none", height: "100%" }}>
+                        <LeftAlertListing
+                          onClose={() => setActiveTab(`Chart`)}
+                          alertResult={customSignals}
+                          setAlertResult={setCustomSignals}
+                          setSelectedCurrency={handleSetSelectedCurrency}
+                          setActiveTab={setActiveTab}
+                        />
+                      </div>
+                      <div style={{ display: activeTab !== "Alerts" && isWatchlistOpen ? "block" : "none", height: "100%" }}>
+                        <LeftWatchlist
+                          onClose={() => setIsWatchlistOpen(false)}
+                          selectedCurrency={selectedCurrency}
+                          detailsList={detailsList}
+                          onAddStock={addStockToDetails}
+                          onRemoveStock={removeStockFromDetails}
+                          setSelectedCurrency={handleSetSelectedCurrency}
+                          liveLtpBySymbol={liveLtpBySymbol}
+                        />
+                      </div>
+                      <div style={{ display: activeTab !== "Alerts" && isDetailsOpen ? "block" : "none", height: "100%" }}>
+                        <LeftDetail
+                          onClose={() => setIsDetailsOpen(false)}
+                          selectedCurrency={selectedCurrency}
+                          setSelectedCurrency={handleSetSelectedCurrency}
+                          addAlert={addAlert}
+                          clearAllCoins={clearAllCoins}
+                          scanner={scanner}
+                          matchedCoins={matchedCoins}
+                          removeCoin={removeCoin}
+                          activeIndicators={selectedIndicator}
+                          openScannerTrigger={openScannerTrigger}
+                        />
+                      </div>
+                      <div style={{ display: activeTab !== "Alerts" && isDepthOpen ? "block" : "none", height: "100%" }}>
+                        <LeftDepth
+                          onClose={() => {
+                            setIsDepthOpen(false);
+                            localStorage.setItem("leftDepthOpen", "false");
+                          }}
+                          predictResults={predictResultData}
+                          setSelectedCurrency={handleSetSelectedCurrency}
+                          isPredicting={isPredicting}
+                          selectedCurrency={selectedCurrency}
+                          predictionStatus={predictionStatus}
+                        />
+                      </div>
+                      <div style={{ display: activeTab !== "Alerts" && isObjectTreeOpen ? "block" : "none", height: "100%" }}>
+                        <LeftObjectTree
+                          onClose={() => setIsObjectTreeOpen(false)}
+                          selectedCurrency={selectedCurrency}
+                          timeframeValue={timeframeValue}
+                          selectedIndicator={selectedIndicator}
+                          indicatorConfigs={indicatorConfigs}
+                          indicatorConfigDefault={indicatorConfigDefault}
+                          indicatorVisibility={indicatorVisibility}
+                          toggleIndicatorVisibility={toggleIndicatorVisibility}
+                          removeIndicator={removeIndicator}
+                          setActiveBarIndicator={setActiveBarIndicator}
+                          liveIndicatorData={liveIndicatorData}
+                          candlesRef={candlesRef}
+                          liveLtpBySymbol={liveLtpBySymbol}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {!isFullscreen && (
+                    <div
+                      className="right-sidebar-mobile"
+                      style={{
+                        width: "56px",
+                        height: "100%",
+                        flexShrink: 0,
+                        borderLeft: isSidePanelOpen ? "1px solid var(--border-color)" : "none",
+                        background: "var(--bg-primary)",
+                        zIndex: 50,
+                        borderTopLeftRadius: isSidePanelOpen ? "0px" : "10px",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <RightSidebar
+                        isSidePanelOpen={isSidePanelOpen}
+                        isWatchlistOpen={activeTab !== "Alerts" && isWatchlistOpen}
+                        toggleWatchlist={() => {
+                          const willOpen = activeTab === "Alerts" ? true : !isWatchlistOpen;
+                          if (activeTab === "Alerts") setActiveTab("Chart");
+                          setIsWatchlistOpen(willOpen);
+                          if (willOpen) {
+                            setIsDetailsOpen(false);
+                            setIsDepthOpen(false);
+                            setIsObjectTreeOpen(false);
+                          }
+                        }}
+                        isObjectTreeOpen={activeTab !== "Alerts" && isObjectTreeOpen}
+                        toggleObjectTree={() => {
+                          const willOpen = activeTab === "Alerts" ? true : !isObjectTreeOpen;
+                          if (activeTab === "Alerts") setActiveTab("Chart");
+                          setIsObjectTreeOpen(willOpen);
+                          if (willOpen) {
+                            setIsWatchlistOpen(false);
+                            setIsDetailsOpen(false);
+                            setIsDepthOpen(false);
+                          }
+                        }}
+                        isDetailsOpen={isDetailsOpen}
+                        toggleDetails={() => {
+                          setIsDetailsOpen((prev) => !prev);
+                          if (!isDetailsOpen) {
+                            setIsWatchlistOpen(false);
+                            setIsDepthOpen(false);
+                            setIsObjectTreeOpen(false);
+                          }
+                        }}
+                        isAlertsOpen={activeTab === "Alerts"}
+                        toggleAlerts={() => {
+                          if (activeTab === "Alerts") {
+                            setActiveTab("Chart");
+                          } else {
+                            setActiveTab("Alerts");
+                            setIsWatchlistOpen(false);
+                            setIsDetailsOpen(false);
+                            setIsDepthOpen(false);
+                            setIsObjectTreeOpen(false);
+                          }
+                        }}
+                        isDepthOpen={activeTab !== "Alerts" && isDepthOpen}
+                        toggleDepth={() => {
+                          const willOpen = !isDepthOpen;
+                          if (activeTab === "Alerts") setActiveTab("Chart");
+                          setIsDepthOpen(willOpen);
+                          localStorage.setItem("leftDepthOpen", String(willOpen));
+                          if (willOpen) {
+                            setIsWatchlistOpen(false);
+                            setIsDetailsOpen(false);
+                            setIsObjectTreeOpen(false);
+                            fetchPredictResults();
+                          }
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {isCodeEditorOpen && (
+                    <CodeEditorPanel
+                      onClose={() => setIsCodeEditorOpen(false)}
+                      onDeploy={handleDeployCode}
+                      onSave={handleSaveStrategy}
+                      onUpdate={handleUpdateStrategy}
+                      onRename={handleRenameStrategy}
+                      onClear={handleClearCode}
+                      onEdit={() => {
+                        setIsDeployed(false);
+                        if (activeStrategyRecord?.id) {
+                          setIsStrategyDirty(true);
+                        }
+                      }}
+                      onNewStrategy={handleStartNewStrategy}
+                      editorCode={editorCode}
+                      setEditorCode={setEditorCode}
+                      isDeployed={isDeployed}
+                      isDeploying={isDeploying}
+                      isSaving={isSavingStrategy}
+                      isUpdating={isUpdatingStrategy}
+                      canShowUpdate={Boolean(activeStrategyRecord?.id || activeStrategyRecord?._id)}
+                      loadedStrategyName={activeStrategyRecord?.strategyName || activeStrategyRecord?.name || draftStrategyName || "Untitled"}
+                    />
+                  )}
+
+                  {isAgentPanelOpen && (
+                    <StrategyAgentPanel
+                      onClose={() => setIsAgentPanelOpen(false)}
+                      messages={agentMessages}
+                      draft={agentDraft}
+                      onDraftChange={setAgentDraft}
+                      onSend={handleSendAgentMessage}
+                      isLoading={isAgentLoading}
+                      onClear={handleClearAgentChat}
+                      onApplyCode={handleApplyAgentCode}
+                    />
+                  )}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  borderLeft: isWatchlistOpen
+                    ? "1px solid var(--border-color)"
+                    : "none",
+                  borderRight: "1px solid var(--border-color)",
+                  display: activeTab === "Backtest" ? "flex" : "none",
+                  flexDirection: "column",
+                  minHeight: "100%",
+                  background: "var(--bg-primary)",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "18px 20px 12px",
+                    borderBottom: "1px solid var(--border-color)",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "10px",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <div>
+                    <div
+                      style={{
+                        fontSize: "1rem",
+                        fontWeight: 700,
+                        color: "var(--text-primary)",
+                      }}
+                    >
+                      Backtest Data
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "0.85rem",
+                        color: "var(--text-secondary)",
+                        marginTop: "4px",
+                      }}
+                    >
+                      Signal timestamps matched to chart candles for OHLC-based
+                      backtesting.
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "0.82rem",
+                        color: "var(--text-secondary)",
+                        padding: "6px 10px",
+                        border: "1px solid var(--border-color)",
+                        borderRadius: "999px",
+                      }}
+                    >
+                      Rows: {resolvedBacktestRows.length}
+                    </div>
+                    <button
+                      onClick={() => setActiveTab("Chart")}
+                      style={{
+                        padding: "8px 14px",
+                        borderRadius: "8px",
+                        border: "1px solid var(--border-color)",
+                        background: "var(--bg-secondary)",
+                        color: "var(--text-primary)",
+                        cursor: "pointer",
+                        fontSize: "0.85rem",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    flex: 1,
+                    overflow: "auto",
+                    padding: "16px 20px 20px",
+                  }}
+                >
+                  {resolvedBacktestRows.length === 0 ? (
+                    <div
+                      style={{
+                        minHeight: "220px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--text-secondary)",
+                        border: "1px dashed var(--border-color)",
+                        borderRadius: "12px",
+                        background: "var(--bg-secondary)",
+                        padding: "24px",
+                        textAlign: "center",
+                      }}
+                    >
+                      No backtest rows yet. Run or deploy a strategy so matching
+                      candles can be captured here.
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        overflowX: "auto",
+                        border: "1px solid var(--border-color)",
+                        borderRadius: "12px",
+                        background: "var(--bg-secondary)",
+                      }}
+                    >
+                      <table
+                        style={{
+                          width: "100%",
+                          borderCollapse: "collapse",
+                          minWidth: "920px",
+                        }}
+                      >
+                        <thead>
+                          <tr style={{ background: "rgba(255,255,255,0.03)" }}>
+                            {[
+                              "Signal",
+                              "Event",
+                              "Date & Time",
+                              "Symbol",
+                              "Timeframe",
+                              "Open",
+                              "High",
+                              "Low",
+                              "Close",
+                            ].map((heading) => (
+                              <th
+                                key={heading}
+                                style={{
+                                  textAlign: "left",
+                                  padding: "12px 14px",
+                                  fontSize: "0.8rem",
+                                  letterSpacing: "0.04em",
+                                  color: "var(--text-secondary)",
+                                  borderBottom: "1px solid var(--border-color)",
+                                }}
+                              >
+                                {heading}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {resolvedBacktestRows.map((row) => (
+                            <tr key={row.id}>
+                              <td
+                                style={{
+                                  padding: "12px 14px",
+                                  borderBottom: "1px solid var(--border-color)",
+                                  color:
+                                    row.signalType === "SELL" ||
+                                    row.signalType === "PUT"
+                                      ? "#ef4444"
+                                      : "#22c55e",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                {row.signalType}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 14px",
+                                  borderBottom: "1px solid var(--border-color)",
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {row.label || "--"}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 14px",
+                                  borderBottom: "1px solid var(--border-color)",
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {row.dateTime}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 14px",
+                                  borderBottom: "1px solid var(--border-color)",
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {row.symbol}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 14px",
+                                  borderBottom: "1px solid var(--border-color)",
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {row.timeframe}
+                              </td>
+                              {["open", "high", "low", "close"].map((field) => (
+                                <td
+                                  key={field}
+                                  style={{
+                                    padding: "12px 14px",
+                                    borderBottom:
+                                      "1px solid var(--border-color)",
+                                    color: "var(--text-primary)",
+                                    fontVariantNumeric: "tabular-nums",
+                                  }}
+                                >
+                                  {Number.isFinite(Number(row[field]))
+                                    ? Number(row[field]).toFixed(2)
+                                    : "--"}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  borderLeft: isWatchlistOpen
+                    ? "1px solid var(--border-color)"
+                    : "none",
+                  borderRight: "1px solid var(--border-color)",
+                  display: activeTab === "Overview" ? "flex" : "none",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                }}
+              >
+                <Overview
+                  key={selectedCurrency?.name}
+                  selectedCurrency={selectedCurrency}
+                  onBack={() => setActiveTab("Chart")}
+                />
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  borderLeft: isWatchlistOpen
+                    ? "1px solid var(--border-color)"
+                    : "none",
+                  borderRight: "1px solid var(--border-color)",
+                  display: activeTab === "Option Chain" ? "flex" : "none",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                }}
+              >
+                {activeTab === "Option Chain" && (
+                  <OptionChain
+                    selectedCurrency={selectedCurrency}
+                    onBack={() => setActiveTab("Chart")}
+                  />
+                )}
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  borderLeft: isWatchlistOpen
+                    ? "1px solid var(--border-color)"
+                    : "none",
+                  borderRight: "1px solid var(--border-color)",
+                  display: activeTab === "OI Analytics" ? "flex" : "none",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                }}
+              >
+                {activeTab === "OI Analytics" && (
+                  <OIAnalytics
+                    selectedCurrency={selectedCurrency}
+                    onBack={() => setActiveTab("Chart")}
+                  />
+                )}
+              </div>
+            </div>
+
+          </div>
+        </div>
+        {/* <SourceCodePanel
+          show={showSourcePanel}
+          indicator={activeSourceIndicator}
+          onClose={() => setShowSourcePanel(false)}
+        /> */}
+      </section>
+      <IndicatorPropertyDialog
+        setIndicatorProperty={setIndicatorProperty}
+        indicatorProperty={indicatorProperty}
+        activeBarIndicator={activeBarIndicator}
+        setIndicatorConfigs={setIndicatorConfigs}
+        indicatorConfigs={indicatorConfigs}
+        indicatorStyle={indicatorStyle}
+        setIndicatorStyle={setIndicatorStyle}
+        indicatorSeriesRef={indicatorSeriesRef}
+        selectedCurrency={selectedCurrency}
+        timeframeValue={timeframeValue}
+        latestIndicatorValuesRef={latestIndicatorValuesRef}
+        fromDate={fromDate}
+        toDate={toDate}
+        setIndicatorLoading={setIndicatorLoading}
+        onBeforeIndicatorUpdate={removeOrphanedIndicatorSeries}
+      />
+    </>
+  );
+}

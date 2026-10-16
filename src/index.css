@@ -1,0 +1,514 @@
+/* 1. Layers + Tailwind. Legacy CSS can go in `legacy` (below utilities). */
+@layer theme, base, legacy, components, utilities;
+
+@import "tailwindcss";
+
+/* 2. Theme variants driven by [data-theme]. Dark is the default. */
+@custom-variant dark (&:not(:where([data-theme="light"], [data-theme="light"] *)));
+@custom-variant light (&:where([data-theme="light"], [data-theme="light"] *));
+
+/* 3. Theme-adaptive variables (single source of truth) */
+:root {
+  color-scheme: dark;
+  --bg-primary: #000000;
+  --panel-background: #000000;
+  --indicator-bar-hover-background: rgba(255, 255, 255, 0.035);
+  --indicator-bar-hover-border: rgba(255, 255, 255, 0.025);
+  --list-hover-background: #3d3d3d;
+  --bg-secondary: #131313;
+  --tooltip-bg: #3d3d3d;
+  --bg-tertiary: #2a2e39;
+  --text-primary: #d1d4dc;
+  --text-secondary: #787b86;
+  --border-color: #242933;
+  --dark-border: #242933;
+  --bs-border-color: var(--border-color);
+  --bs-border-color-translucent: var(--border-color);
+  --bs-secondary-rgb: 19, 19, 19;
+  --success-color: #089981;
+  --danger-color: #f23645;
+  --accent-color: #FE6C02;
+  --brand-primary: #FE6C02;
+  --brand-primary-hover: rgb(255, 98, 0);
+
+  /* z-index scale */
+  --z-base: 10;
+  --z-toolbar: 60;
+  --z-dropdown: 999;
+  --z-modal-backdrop: 1000;
+  --z-modal: 10000;
+  --z-toast: 9999;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-primary: #ffffff;
+  --panel-background: var(--bg-primary);
+  --indicator-bar-hover-background: var(--bg-secondary);
+  --indicator-bar-hover-border: var(--border-color);
+  --list-hover-background: var(--bg-tertiary);
+  --bg-secondary: #ebebeb;
+  --tooltip-bg: #ebebeb;
+  --bg-tertiary: #e5e7eb;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --border-color: #9ca3af;
+  --bs-border-color: var(--border-color);
+  --bs-border-color-translucent: var(--border-color);
+  --bs-secondary-rgb: 243, 244, 246;
+  --success-color: #059669;
+  --danger-color: #dc2626;
+ --accent-color: #FE6C02;
+  --brand-primary: #FE6C02;
+  --brand-primary-hover: #1d4ed8;
+}
+
+/* 4. Tokens that follow the variables above (`inline` = live theme switching).
+      Named surface/fg/line (not primary/secondary) because a Tailwind color
+      name is shared by bg-*, text-* and border-*. */
+@theme inline {
+  --color-secondary: var(--bg-secondary);
+  --color-surface: var(--bg-primary);
+  --color-surface-2: var(--bg-secondary);
+  --color-surface-3: var(--bg-tertiary);
+  --color-panel: var(--panel-background);
+  --color-fg: var(--text-primary);
+  --color-fg-muted: var(--text-secondary);
+  --color-line: var(--border-color);
+  --color-accent: var(--accent-color);
+  --color-success: var(--success-color);
+  --color-danger: var(--danger-color);
+  --color-hover-bar: var(--indicator-bar-hover-background);
+  --color-hover-bar-border: var(--indicator-bar-hover-border);
+  --color-list-hover: var(--list-hover-background);
+  /* Landing page aliases reuse the app's active theme. */
+  --color-background: var(--bg-primary);
+  --color-card: var(--panel-background);
+  --color-border: var(--border-color);
+  --color-ink: var(--text-primary);
+  --color-inksoft: var(--text-secondary);
+  --color-teal: var(--brand-primary);
+  --color-teal-hover: var(--brand-primary-hover);
+  --color-teal-light: color-mix(in srgb, var(--brand-primary) 13%, transparent);
+}
+
+/* 5. Static tokens */
+@theme {
+  /* Fixed surfaces */
+  --color-canvas-deep: #090e16;
+  --color-chart-bg: #020617;
+  --color-fg-highlight: #f3f4f6;
+  --color-line-panel: #23262f;
+  --color-dark-border: #242933;
+  --color-border-dark: #242933;
+
+  /* Trading (subtle fills: bg-bull/12, bg-bear/12) */
+  --color-bull: #089981;
+  --color-bull-light: #22c55e;
+  --color-bull-teal: #26a69a;
+  --color-bear: #f23645;
+  --color-bear-light: #ef4444;
+  --color-bear-soft: #ef5350;
+  --color-warn: #f59e0b;
+  --color-warn-orange: #ff9800;
+  --color-warn-light: #ffb74d;
+
+  /* Brand accents */
+  --color-accent-blue: #3b82f6;
+  --color-accent-purple: #7c3aed;
+  --color-accent-violet: #8b5cf6;
+
+  /* Exchange / segment badges (bg-badge-nse/10 text-badge-nse) */
+  --color-badge-nse: #4ecdc4;
+  --color-badge-bse: #9675ff;
+  --color-badge-fut: #ffab00;
+  --color-badge-opt: #64b5f6;
+  --color-badge-eq: #2962ff;
+
+  /* Fonts */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: "DM Sans", -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", "Space Mono", "Fira Code", monospace;
+
+  /* Micro type */
+  --text-2xs: 0.58rem;
+  --text-2xs--line-height: 1;
+  --text-xs-tight: 0.68rem;
+  --text-xs-tight--line-height: 1.2;
+  --text-compact: 0.8rem;
+  --text-compact--line-height: 1.25;
+
+  /* Auth layout spacing — used by login and signup at every viewport size */
+  --spacing-auth-1: 0.375rem;
+  --spacing-auth-2: 0.5rem;
+  --spacing-auth-3: 0.75rem;
+  --spacing-auth-4: 1rem;
+  --spacing-auth-5: 1.5rem;
+  --spacing-auth-6: 2rem;
+  --spacing-auth-page: clamp(0.75rem, 3vw, 3rem);
+  --spacing-auth-stack: clamp(0.5rem, 1.2vh, 0.85rem);
+  --spacing-auth-control-x: 0.8rem;
+  --spacing-auth-control-y: clamp(0.42rem, 1.1vh, 0.65rem);
+  /* Radius */
+  --radius-xs: 3px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Shadows */
+  --shadow-card: 0 2px 14px rgba(0, 0, 0, 0.28);
+  --shadow-dropdown: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --shadow-glow-blue: 0 4px 14px rgba(59, 130, 246, 0.35);
+  --shadow-glow-green: 0 0 10px rgba(8, 153, 129, 0.5);
+  --shadow-glow-red: 0 0 14px rgba(239, 68, 68, 0.15);
+
+  --blur-overlay: 6px;
+}
+
+/* 6. Custom utilities */
+/* Global theme-aware scrollbar for every scrollable surface. */
+html,
+body,
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-secondary) var(--bg-secondary);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--text-secondary);
+  border: 2px solid var(--bg-secondary);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-color);
+}
+
+@utility border-1 {
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-color);
+}
+
+.border-line,
+[class*="border-line"] {
+  border-color: var(--border-color) !important;
+}
+
+.border {
+  border-color: var(--border-color);
+}
+
+.nav-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.nav-dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-decoration: none !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: none;
+  outline: none;
+}
+
+.nav-dropdown-trigger:hover,
+.nav-dropdown-trigger[aria-expanded="true"] {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] .nav-dropdown-trigger:hover,
+[data-theme="light"] .nav-dropdown-trigger[aria-expanded="true"] {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.nav-dropdown-chevron {
+  transition: transform 0.2s ease;
+  opacity: 0.7;
+}
+
+.nav-dropdown-trigger[aria-expanded="true"] .nav-dropdown-chevron {
+  transform: rotate(180deg);
+}
+
+.nav-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 60;
+  min-width: 14rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary) !important;
+  padding: 0.375rem;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  animation: navDropdownFadeIn 0.15s ease-out;
+}
+
+[data-theme="light"] .nav-dropdown-panel {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+}
+
+.nav-dropdown-panel--right {
+  left: auto;
+  right: 0;
+}
+
+@keyframes navDropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.nav-dropdown-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  text-align: left;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-decoration: none !important;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.nav-dropdown-item:hover {
+  background-color: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
+}
+
+.nav-dropdown-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.nav-dropdown-item:hover .nav-dropdown-item-icon {
+  opacity: 1;
+}
+
+.nav-dropdown-panel,
+.products-menu-panel,
+.bg-secondary,
+[class*="bg-(secondary"] {
+  background-color: var(--bg-secondary) !important;
+}
+@utility z-base { z-index: var(--z-base); }
+@utility z-toolbar { z-index: var(--z-toolbar); }
+@utility z-dropdown { z-index: var(--z-dropdown); }
+@utility z-modal-backdrop { z-index: var(--z-modal-backdrop); }
+@utility z-modal { z-index: var(--z-modal); }
+@utility z-toast { z-index: var(--z-toast); }
+
+/* Replaces the old .custom-scrollbar class: className="custom-scrollbar" keeps working */
+@utility custom-scrollbar {
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-track { background: var(--bg-tertiary); }
+  &::-webkit-scrollbar-thumb {
+    background: var(--text-secondary);
+    border-radius: 4px;
+  }
+}
+
+/* Modal list scrollbar: track blends with modal bg, thumb uses list hover color */
+@utility modal-scrollbar {
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-track { background: var(--bg-secondary); }
+  &::-webkit-scrollbar-thumb {
+    background: var(--list-hover-background);
+    border-radius: 4px;
+  }
+}
+
+/* Hide scrollbars completely across all browsers */
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+}
+
+@utility bg-overlay { background-color: rgba(2, 6, 23, 0.68); }
+@utility num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* 7. Base styles */
+@layer base {
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  ::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.7;
+  }
+}
+
+/* 8. One-off app rules (kept unlayered because of !important) */
+body.listing-modal-open #main-chart-loader {
+  display: none !important;
+}
+
+.react-tel-input.phone-field .form-control {
+  width: 100%;
+  height: 42px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.875rem;
+  box-shadow: none;
+  transition: border-color 0.15s;
+}
+.react-tel-input.phone-field .form-control:focus {
+  border-color: var(--accent-color);
+  box-shadow: none;
+}
+ 
+.react-tel-input.phone-field .flag-dropdown {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+}
+.react-tel-input.phone-field .selected-flag,
+.react-tel-input.phone-field .flag-dropdown.open .selected-flag {
+  background: transparent;
+  border-radius: 8px 0 0 8px;
+}
+.react-tel-input.phone-field .selected-flag:hover,
+.react-tel-input.phone-field .selected-flag:focus {
+  background: var(--bg-primary);
+}
+ 
+.react-tel-input.phone-field .country-list {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  z-index: var(--z-dropdown);
+}
+.react-tel-input.phone-field .country-list .country:hover,
+.react-tel-input.phone-field .country-list .country.highlight {
+  background: var(--bg-secondary);
+}
+.react-tel-input.phone-field .country-list .country .dial-code {
+  color: var(--text-secondary);
+}
+.react-tel-input.phone-field .country-list .search {
+  background: var(--bg-primary);
+}
+.react-tel-input.phone-field .country-list .search-box {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+ 
+/* Error state (set via containerClass in Signup) */
+.react-tel-input.phone-field-error .form-control,
+.react-tel-input.phone-field-error .flag-dropdown {
+  border-color: var(--danger-color);
+}
+/* Theme switches */
+:root:not([data-theme="light"]) .light-only,
+[data-theme="dark"] .light-only {
+  display: none !important;
+}
+
+[data-theme="light"] .dark-only {
+  display: none !important;
+}
+
+/* Financial status colors (guaranteed in both themes) */
+.text-bull {
+  color: #089981 !important;
+}
+.text-bear {
+  color: #f23645 !important;
+}
+.bg-bull {
+  background-color: #089981 !important;
+}
+.bg-bear {
+  background-color: #f23645 !important;
+}
+
+/* ==========================================================================
+   Global Scroll Reveal Transitions (matches charts-landing-page.preview.emergentagent.com)
+   ========================================================================== */
+.reveal-on-scroll {
+  opacity: 0;
+  transform: translateY(var(--reveal-y, 26px));
+  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1) var(--reveal-delay, 0s),
+              transform 0.7s cubic-bezier(0.22, 1, 0.36, 1) var(--reveal-delay, 0s);
+  will-change: opacity, transform;
+}
+
+.reveal-on-scroll.is-revealed {
+  opacity: 1 !important;
+  transform: translateY(0) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal-on-scroll {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+}
+
+/* Footer Link Reset (prevents Bootstrap a tag blue color & underline) */
+[data-testid="footer-section"] a,
+footer a {
+  color: var(--text-secondary) !important;
+  text-decoration: none !important;
+}
+
+[data-testid="footer-section"] a:hover,
+footer a:hover {
+  color: var(--accent-color) !important;
+  border-color: var(--accent-color) !important;
+  text-decoration: none !important;
+}
+
+
