@@ -146,86 +146,6 @@ export const getStockLogo = (symbol, name, code) => {
   return null;
 };
 
-export const KNOWN_FULL_NAMES = {
-  NIFTY: "Nifty 50 Index",
-  "NIFTY 50": "Nifty 50 Index",
-  SENSEX: "S&P BSE Sensex Index",
-  BANKNIFTY: "Nifty Bank Index",
-  "NIFTY BANK": "Nifty Bank Index",
-  SPX: "S&P 500 Index",
-  "S&P 500": "S&P 500 Index",
-  CNXIT: "Nifty IT Index",
-  "NIFTY IT": "Nifty IT Index",
-  ADANIENT: "Adani Enterprises Limited",
-  POWERINDIA: "Hitachi Energy India Limited",
-  ABB: "ABB India Limited",
-  TCS: "Tata Consultancy Services Limited",
-  RELIANCE: "Reliance Industries Limited",
-  INFY: "Infosys Limited",
-  HDFCBANK: "HDFC Bank Limited",
-  ICICIBANK: "ICICI Bank Limited",
-  SBIN: "State Bank of India",
-  BHARTIARTL: "Bharti Airtel Limited",
-  ITC: "ITC Limited",
-  KOTAKBANK: "Kotak Mahindra Bank Limited",
-  LT: "Larsen & Toubro Limited",
-  AXISBANK: "Axis Bank Limited",
-  HINDUNILVR: "Hindustan Unilever Limited",
-  BAJFINANCE: "Bajaj Finance Limited",
-  MARUTI: "Maruti Suzuki India Limited",
-  TATAMOTORS: "Tata Motors Limited",
-  SUNPHARMA: "Sun Pharmaceutical Industries Limited",
-  TITAN: "Titan Company Limited",
-  WIPRO: "Wipro Limited",
-  HAVELLS: "Havells India Limited",
-  HCLTECH: "HCL Technologies Limited",
-  TECHM: "Tech Mahindra Limited",
-  ASIANPAINT: "Asian Paints Limited",
-  COALINDIA: "Coal India Limited",
-  NESTLEIND: "Nestle India Limited",
-  ULTRACEMCO: "UltraTech Cement Limited",
-  GRASIM: "Grasim Industries Limited",
-  INDUSINDBK: "IndusInd Bank Limited",
-  NTPC: "NTPC Limited",
-  ONGC: "Oil and Natural Gas Corporation Limited",
-  POWERGRID: "Power Grid Corporation of India Limited",
-  JSWSTEEL: "JSW Steel Limited",
-  TATASTEEL: "Tata Steel Limited",
-  HINDALCO: "Hindalco Industries Limited",
-  BPCL: "Bharat Petroleum Corporation Limited",
-  IOC: "Indian Oil Corporation Limited",
-  HEROMOTOCO: "Hero MotoCorp Limited",
-  "BAJAJ-AUTO": "Bajaj Auto Limited",
-  CIPLA: "Cipla Limited",
-  DRREDDY: "Dr. Reddy's Laboratories Limited",
-  APOLLOHOSP: "Apollo Hospitals Enterprise Limited",
-  DIVISLAB: "Divi's Laboratories Limited",
-  BRITANNIA: "Britannia Industries Limited",
-  TATACONSUM: "Tata Consumer Products Limited",
-  BEL: "Bharat Electronics Limited",
-  HAL: "Hindustan Aeronautics Limited",
-  EICHERMOT: "Eicher Motors Limited",
-  AMBUJACEM: "Ambuja Cements Limited",
-  BANKBARODA: "Bank of Baroda",
-  BANKINDIA: "Bank of India",
-  CANBK: "Canara Bank",
-  UNIONBANK: "Union Bank of India",
-  PNB: "Punjab National Bank",
-  FEDERALBNK: "Federal Bank",
-  BANDHANBNK: "Bandhan Bank",
-  IDFCFIRSTB: "IDFC First Bank",
-  AUBANK: "AU Small Finance Bank",
-  VEDL: "Vedanta Limited",
-  ZYDUSLIFE: "Zydus Lifesciences Limited",
-  SUZLON: "Suzlon Energy Limited",
-  TIINDIA: "Tube Investments of India Limited",
-  UNITDSPR: "United Spirits Limited",
-  SWIGGY: "Swiggy Limited",
-  ZOMATO: "Zomato Limited",
-  PAYTM: "One97 Communications Limited",
-  DMART: "Avenue Supermarts Limited",
-};
-
 export const getStockFullName = (stock, detailsList = []) => {
   if (!stock) return "";
   if (stock.fullName) return stock.fullName;
@@ -240,12 +160,10 @@ export const getStockFullName = (stock, detailsList = []) => {
         (s?.name && stock?.name && String(s.name).toUpperCase() === String(stock.name).toUpperCase())
     );
     if (found?.fullName) return found.fullName;
+    if (found?.description) return found.description;
+    if (found?.companyName) return found.companyName;
   }
 
-  const sym = String(stock.symbol || stock.name || "").trim().toUpperCase();
-  if (KNOWN_FULL_NAMES[sym]) return KNOWN_FULL_NAMES[sym];
-  const cleanSym = sym.replace(/-(EQ|BE|SM)$/, "");
-  if (KNOWN_FULL_NAMES[cleanSym]) return KNOWN_FULL_NAMES[cleanSym];
   if (stock.name && stock.symbol && stock.name !== stock.symbol) return stock.name;
   return stock.fullName || stock.name || stock.symbol || "";
 };

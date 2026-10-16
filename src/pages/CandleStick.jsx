@@ -17,6 +17,7 @@ import { RiResetRightLine } from "react-icons/ri";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import ChartHeader from "../components/tradingModals/ChartHeader";
 import LeftWatchlist from "../components/layout/LeftWatchlist";
+import WatchlistOverview from "../components/layout/WatchlistOverview";
 import RightSidebar from "../components/layout/RightSidebar";
 import LeftDepth from "../components/layout/LeftDepth";
 import useSocket from "../util/useSocket";
@@ -515,6 +516,53 @@ export default function Candlestick() {
     },
     [sidePanelWidth],
   );
+
+  const [overviewHeight, setOverviewHeight] = useState(() => {
+    try {
+      const saved = localStorage.getItem("watchlist_overview_height");
+      return saved ? Math.max(44, parseInt(saved, 10)) : 320;
+    } catch {
+      return 320;
+    }
+  });
+  const [isResizingOverview, setIsResizingOverview] = useState(false);
+  const overviewHeightRef = useRef(overviewHeight);
+  useEffect(() => {
+    overviewHeightRef.current = overviewHeight;
+  }, [overviewHeight]);
+
+  const handleOverviewResizeStart = useCallback((e) => {
+    e.preventDefault();
+    setIsResizingOverview(true);
+    const startY = e.clientY;
+    const startHeight = overviewHeightRef.current;
+
+    const handleMouseMove = (moveEvent) => {
+      // Dragging cursor downwards reduces overview height, dragging upwards increases it
+      const deltaY = startY - moveEvent.clientY;
+      const minH = 44; // Matches minimized header row in image 2
+      const maxH = Math.max(minH, window.innerHeight - 180);
+      const newH = Math.max(minH, Math.min(maxH, startHeight + deltaY));
+      setOverviewHeight(newH);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingOverview(false);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setOverviewHeight((current) => {
+        localStorage.setItem("watchlist_overview_height", String(current));
+        return current;
+      });
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -9187,20 +9235,71 @@ json.dumps(result)
                         style={{
                           display:
                             activeTab !== "Alerts" && isWatchlistOpen
-                              ? "block"
+                              ? "flex"
                               : "none",
+                          flexDirection: "column",
                           height: "100%",
+                          overflow: "hidden",
                         }}
                       >
-                        <LeftWatchlist
-                          onClose={() => setIsWatchlistOpen(false)}
-                          selectedCurrency={selectedCurrency}
-                          detailsList={detailsList}
-                          onAddStock={addStockToDetails}
-                          onRemoveStock={removeStockFromDetails}
-                          setSelectedCurrency={handleSetSelectedCurrency}
-                          liveLtpBySymbol={liveLtpBySymbol}
+                        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+                          <LeftWatchlist
+                            onClose={() => setIsWatchlistOpen(false)}
+                            selectedCurrency={selectedCurrency}
+                            detailsList={detailsList}
+                            onAddStock={addStockToDetails}
+                            onRemoveStock={removeStockFromDetails}
+                            setSelectedCurrency={handleSetSelectedCurrency}
+                            liveLtpBySymbol={liveLtpBySymbol}
+                          />
+                        </div>
+
+                        {/* Separator / Horizontal resizer between Watchlist and Overview */}
+                        <div
+                          onMouseDown={handleOverviewResizeStart}
+                          style={{
+                            height: "5px",
+                            cursor: "row-resize",
+                            backgroundColor: isResizingOverview
+                              ? "var(--accent-color)"
+                              : "var(--border-color)",
+                            position: "relative",
+                            zIndex: 10,
+                            flexShrink: 0,
+                            transition: "background-color 0.2s",
+                          }}
+                          className="hover:bg-[var(--accent-color)]"
+                          title="Drag to resize Overview"
                         />
+
+                        {/* Overview Component under Watchlist */}
+                        <div
+                          style={{
+                            height: `${overviewHeight}px`,
+                            flexShrink: 0,
+                            overflow: "hidden",
+                            transition: isResizingOverview
+                              ? "none"
+                              : "height 0.15s ease",
+                          }}
+                        >
+                          <WatchlistOverview
+                            selectedCurrency={selectedCurrency}
+                            detailsList={detailsList}
+                            liveLtpBySymbol={liveLtpBySymbol}
+                            isMinimized={overviewHeight <= 50}
+                            onToggleMinimize={() => {
+                              setOverviewHeight((prev) => {
+                                const next = prev <= 50 ? 320 : 44;
+                                localStorage.setItem(
+                                  "watchlist_overview_height",
+                                  String(next),
+                                );
+                                return next;
+                              });
+                            }}
+                          />
+                        </div>
                       </div>
                       <div
                         style={{

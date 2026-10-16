@@ -5,45 +5,10 @@ import { ListingModal } from "../tradingModals/ListingModal";
 import { getStockLogo } from "../../util/stockLogo";
 import Tooltip from "../common/Tooltip";
 
-const KNOWN_FULL_NAMES = {
-  NIFTY: "Nifty 50 Index",
-  "NIFTY 50": "Nifty 50 Index",
-  SENSEX: "S&P BSE Sensex Index",
-  BANKNIFTY: "Nifty Bank Index",
-  "NIFTY BANK": "Nifty Bank Index",
-  SPX: "S&P 500 Index",
-  "S&P 500": "S&P 500 Index",
-  CNXIT: "Nifty IT Index",
-  "NIFTY IT": "Nifty IT Index",
-  ADANIENT: "Adani Enterprises Limited",
-  POWERINDIA: "Hitachi Energy India Limited",
-  ABB: "ABB India Limited",
-  TCS: "Tata Consultancy Services Limited",
-  RELIANCE: "Reliance Industries Limited",
-  INFY: "Infosys Limited",
-  HDFCBANK: "HDFC Bank Limited",
-  ICICIBANK: "ICICI Bank Limited",
-  SBIN: "State Bank of India",
-  BHARTIARTL: "Bharti Airtel Limited",
-  ITC: "ITC Limited",
-  KOTAKBANK: "Kotak Mahindra Bank Limited",
-  LT: "Larsen & Toubro Limited",
-  AXISBANK: "Axis Bank Limited",
-  HINDUNILVR: "Hindustan Unilever Limited",
-  BAJFINANCE: "Bajaj Finance Limited",
-  MARUTI: "Maruti Suzuki India Limited",
-  TATAMOTORS: "Tata Motors Limited",
-  SUNPHARMA: "Sun Pharmaceutical Industries Limited",
-  TITAN: "Titan Company Limited",
-  WIPRO: "Wipro Limited",
-};
-
 const getStockFullName = (stock) => {
   if (stock?.fullName) return stock.fullName;
   if (stock?.description) return stock.description;
   if (stock?.companyName) return stock.companyName;
-  const sym = String(stock?.symbol || stock?.name || "").trim().toUpperCase();
-  if (KNOWN_FULL_NAMES[sym]) return KNOWN_FULL_NAMES[sym];
   if (stock?.name && stock?.symbol && stock.name !== stock.symbol) return stock.name;
   return stock?.fullName || stock?.name || stock?.symbol || "";
 };
